@@ -20,10 +20,11 @@ function setToVersion(versionIndex, ctx, after) {
     st.compsRefHandler.resourceVersions = version.opEvent.resourceVersionsBefore;
   }
 
-  st.scriptChange.next(opEvent);
+  st.compsRefHandler.resourceChange.next(opEvent)
+  //st.scriptChange.next(opEvent);
 }
 
-jb.component('studio.undo', { /* studio.undo */
+jb.component('studio.undo', {
   type: 'action',
   impl: ctx => {
     if (st.undoIndex > 0)
@@ -31,7 +32,7 @@ jb.component('studio.undo', { /* studio.undo */
   }
 })
 
-jb.component('studio.clean-selection-preview', { /* studio.cleanSelectionPreview */
+jb.component('studio.cleanSelectionPreview', {
   type: 'action',
   impl: () => {
     if (st.compsHistory.length > 0)
@@ -39,7 +40,7 @@ jb.component('studio.clean-selection-preview', { /* studio.cleanSelectionPreview
   }
 })
 
-jb.component('studio.revert', { /* studio.revert */
+jb.component('studio.revert', {
   type: 'action',
   params: [
     {id: 'toIndex', as: 'number'}
@@ -52,7 +53,7 @@ jb.component('studio.revert', { /* studio.revert */
   }
 })
 
-jb.component('studio.redo', { /* studio.redo */
+jb.component('studio.redo', {
   type: 'action',
   impl: ctx => {
     if (st.undoIndex < st.compsHistory.length)
@@ -60,19 +61,22 @@ jb.component('studio.redo', { /* studio.redo */
   }
 })
 
-jb.component('studio.copy', { /* studio.copy */
+jb.component('studio.copy', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
   ],
   impl: (ctx, path) => {
     try {
-      st.clipboard = eval('(' + jb.prettyPrint(st.valOfPath(path)) + ')')
-    } catch(e) {}
+      const val = st.valOfPath(path)
+      st.clipboard = typeof val == 'string' ? val : eval('(' + jb.prettyPrint(val) + ')')
+    } catch(e) {
+      jb.logExecption(e,'copy')
+    }
   }
 })
 
-jb.component('studio.paste', { /* studio.paste */
+jb.component('studio.paste', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -81,15 +85,15 @@ jb.component('studio.paste', { /* studio.paste */
     (st.clipboard != null) && jb.writeValue(st.refOfPath(path), st.clipboard, ctx)
 })
 
-jb.component('studio.script-history-items', { /* studio.scriptHistoryItems */
+jb.component('studio.scriptHistoryItems', {
   impl: ctx => st.compsHistory
 })
 
-jb.component('studio.comps-undo-index', { /* studio.compsUndoIndex */
+jb.component('studio.compsUndoIndex', {
   impl: ctx => st.undoIndex - 1
 })
 
-jb.component('studio.script-history', { /* studio.scriptHistory */
+jb.component('studio.scriptHistory', {
   type: 'control',
   impl: group({
     controls: [
@@ -118,17 +122,17 @@ jb.component('studio.script-history', { /* studio.scriptHistory */
             width: '100'
           })
         ],
-        style: table.withHeaders()
+        style: table.plain()
       })
     ],
     features: [
-      watchObservable(ctx => st.compsRefHandler.resourceChange.debounceTime(500)),
+      watchObservable(ctx => st.compsRefHandler.resourceChange, 500),
       css.height({height: '400', overflow: 'auto', minMax: 'max'})
     ]
   })
 })
 
-jb.component('studio.open-script-history', { /* studio.openScriptHistory */ 
+jb.component('studio.openScriptHistory', {
   type: 'action',
   impl: openDialog({
     style: dialog.studioFloating({id: 'script-history', width: '700', height: '400'}),

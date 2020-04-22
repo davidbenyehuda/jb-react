@@ -1,19 +1,18 @@
-jb.component('studio.goto-path', { /* studio.gotoPath */
+jb.component('studio.gotoPath', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
   ],
-  impl: runActions(
-    dialog.closeContainingPopup(),
-    writeValue('%$studio/profile_path%', '%$path%'),
-    action.if(
-        studio.isOfType('%$path%', 'control,table-field'),
-        studio.openControlTree()
-      )
+  impl: action.if(
+    '%$path%',
+    runActions(
+      dialog.closeContainingPopup(),
+      writeValue('%$studio/profile_path%', '%$path%')
+    )
   )
 })
 
-jb.component('studio.open-property-menu', { /* studio.openPropertyMenu */
+jb.component('studio.openPropertyMenu', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -36,26 +35,26 @@ jb.component('studio.open-property-menu', { /* studio.openPropertyMenu */
         menu.action({
           title: 'Inteliscript editor',
           action: studio.openJbEditor('%$path%'),
-          icon: 'code',
+          icon: icon('build'),
           shortcut: 'Ctrl+I'
         }),
         menu.action({
           title: 'Javascript editor',
           action: studio.editSource('%$path%'),
-          icon: 'code',
+          icon: icon({icon: 'LanguageJavascript', type: 'mdi'}),
           shortcut: 'Ctrl+J'
         }),
         studio.gotoEditorOptions('%$path%'),
         menu.action({
           title: 'Delete',
           action: studio.delete('%$path%'),
-          icon: 'delete',
+          icon: icon('delete'),
           shortcut: 'Delete'
         }),
         menu.action({
           title: data.if(studio.disabled('%$path%'), 'Enable', 'Disable'),
           action: studio.toggleDisabled('%$path%'),
-          icon: 'do_not_disturb',
+          icon: icon('do_not_disturb'),
           shortcut: 'Ctrl+X'
         })
       ]
@@ -63,7 +62,7 @@ jb.component('studio.open-property-menu', { /* studio.openPropertyMenu */
   })
 })
 
-jb.component('studio.jb-editor-menu', { /* studio.jbEditorMenu */ 
+jb.component('studio.jbEditorMenu', {
   type: 'menu.option',
   params: [
     {id: 'path', as: 'string'},
@@ -81,7 +80,7 @@ jb.component('studio.jb-editor-menu', { /* studio.jbEditorMenu */
               editableText({
                 title: 'property name',
                 databind: '%$name%',
-                style: editableText.mdlInput(),
+                style: editableText.mdcInput(),
                 features: [
                   feature.onEnter(
                     writeValue(studio.ref('%$path%~%$name%'), ''),
@@ -141,10 +140,10 @@ jb.component('studio.jb-editor-menu', { /* studio.jbEditorMenu */
       menu.endWithSeparator(
         [
           menu.action({
-            vars: [Var('compName', split({separator: '~', text: '%$root%', part: 'first'}))],
             title: 'Goto parent',
-            action: studio.openComponentInJbEditor('%$path%', '%$fromPath%'),
-            showCondition: contains({text: '~', allText: '%$root%'})
+            action: studio.openJbEditor(studio.parentPath('%$path%'), studio.parent('%$fromPath%')),
+            showCondition: contains({text: '~', allText: '%$root%'}),
+            shortcut: 'Ctrl+P',
           }),
           menu.action({
             vars: [Var('compName', studio.compName('%$path%'))],
@@ -164,8 +163,13 @@ jb.component('studio.jb-editor-menu', { /* studio.jbEditorMenu */
       menu.studioWrapWith({path: '%$path%', type: 'control', components: list('group')}),
       menu.studioWrapWith({
         path: '%$path%',
+        type: 'style',
+        components: list('style-with-features')
+      }),
+      menu.studioWrapWith({
+        path: '%$path%',
         type: 'data',
-        components: list('pipeline', 'list', 'firstSucceeding')
+        components: list('pipeline', 'list', 'first-succeeding')
       }),
       menu.studioWrapWith({
         path: '%$path%',
@@ -176,6 +180,11 @@ jb.component('studio.jb-editor-menu', { /* studio.jbEditorMenu */
         path: '%$path%',
         type: 'action',
         components: list('runActions', 'runActionOnItems')
+      }),
+      menu.studioWrapWith({
+        path: '%$path%',
+        type: 'feature',
+        components: list('feature.byCondition')
       }),
       menu.studioWrapWithArray('%$path%'),
       menu.action({
@@ -202,7 +211,7 @@ jb.component('studio.jb-editor-menu', { /* studio.jbEditorMenu */
                   editableText({
                     title: 'remark',
                     databind: '%$remark%',
-                    style: editableText.mdlInput(),
+                    style: editableText.mdcInput(),
                     features: [
                       feature.onEnter(
                         writeValue(studio.ref('%$path%~remark'), '%$remark%'),
@@ -228,45 +237,60 @@ jb.component('studio.jb-editor-menu', { /* studio.jbEditorMenu */
           menu.action({
             title: 'Javascript',
             action: studio.editSource('%$path%'),
-            icon: 'code',
+            icon: icon({icon: 'LanguageJavascript', type: 'mdi'}),
             shortcut: 'Ctrl+J'
           }),
           menu.action({
             title: 'Delete',
             action: studio.delete('%$path%'),
-            icon: 'delete',
+            icon: icon('delete'),
             shortcut: 'Delete'
           }),
           menu.action({
             title: {'$if': studio.disabled('%$path%'), then: 'Enable', else: 'Disable'},
             action: studio.toggleDisabled('%$path%'),
-            icon: 'do_not_disturb',
+            icon: icon('do_not_disturb'),
             shortcut: 'Ctrl+X'
           }),
           menu.action({
             title: 'Copy',
             action: studio.copy('%$path%'),
-            icon: 'copy',
+            icon: icon('copy'),
             shortcut: 'Ctrl+C'
           }),
           menu.action({
             title: 'Paste',
             action: studio.paste('%$path%'),
-            icon: 'paste',
+            icon: icon('paste'),
             shortcut: 'Ctrl+V'
           }),
           menu.action({
             title: 'Undo',
             action: studio.undo(),
-            icon: 'undo',
+            icon: icon('undo'),
             shortcut: 'Ctrl+Z'
           }),
           menu.action({
             title: 'Redo',
             action: studio.redo(),
-            icon: 'redo',
+            icon: icon('redo'),
             shortcut: 'Ctrl+Y'
-          })
+          }),
+          menu.action({
+            title: 'Make Local',
+            action: studio.openMakeLocal('%$path%'),
+            showCondition: studio.canMakeLocal('%$path%')
+          }),          
+          menu.action({
+            title: 'Extract Component',
+            action: studio.openExtractComponent('%$path%'),
+            showCondition: studio.canExtractParam('%$path%')
+          }),
+          menu.action({
+            title: 'Extract Param',
+            action: studio.openExtractParam('%$path%'),
+            showCondition: studio.canExtractParam('%$path%')
+          }),
         ],
         optionsFilter: '%%'
       })

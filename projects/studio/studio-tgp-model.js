@@ -6,28 +6,23 @@ st.PropertiesTree = class {
 		this.rootPath = rootPath;
 		this.refHandler = st.compsRefHandler;
 	}
-	title(path) {
-		const prop = path.split('~').pop();
-		if (isNaN(Number(prop)))
-			return prop
-		return st.compNameOfPath(path)
-	}
 	isArray(path) {
 		return this.children(path).length > 0;
 	}
 	children(path) {
-		return st.paramsOfPath(path).filter(p=>!st.isControlType(p.type)).map(p=>p.id)
-			.map(prop=>path + '~' + prop)
-			.map(innerPath=> {
-					const val = st.valOfPath(innerPath);
-					if (Array.isArray(val) && val.length > 0)
-					 return st.arrayChildren(innerPath,true);
-					return [innerPath]
-			})
-			.flat()
+		if (st.isOfType(path,'data'))
+			return []
+		if (Array.isArray(st.valOfPath(path)))
+			return st.arrayChildren(path,false)
+		return st.paramsOfPath(path)
+			.filter(p=>!st.isControlType(p.type))
+			.map(prop=>path + '~' + prop.id)
 	}
-	move(from,to) {
-		return st.moveFixDestination(from,to)
+	val(path) {
+		return st.valOfPath(path)
+	}
+	move(from,to,ctx) {
+		return st.moveFixDestination(from,to,ctx)
 	}
 	disabled(path) {
 		return st.disabled(path)
@@ -45,7 +40,7 @@ st.ControlTree = class {
 	title(path,collapsed) {
 		const val = st.valOfPath(path);
 		if (path &&  (val == null || Array.isArray(val) && val.length == 0) && path.match(/~controls$/))
-			return jb.ui.h('a',{style: {cursor: 'pointer', 'text-decoration': 'underline'}, onclick: e => st.newControl(path) },'add new');
+			return jb.ui.h('a',{style: {cursor: 'pointer', 'text-decoration': 'underline'}, onclick: 'newControl' },'add new');
 		return this.fixTitles(st.shortTitle(path),path,collapsed)
 	}
 	// differnt from children() == 0, beacuse in the control tree you can drop into empty group
@@ -62,8 +57,8 @@ st.ControlTree = class {
 				}))
 				.concat(nonRecursive ? [] : this.innerControlPaths(path));
 	}
-	move(from,to) {
-		return st.moveFixDestination(from,to)
+	move(from,to,ctx) {
+		return st.moveFixDestination(from,to,ctx)
 	}
 	disabled(path) {
 		return st.disabled(path)
@@ -74,10 +69,8 @@ st.ControlTree = class {
 
 	// private
 	innerControlPaths(path) {
-		return ['action~content'] // add more inner paths here
-			.map(x=>path+'~'+x)
-			.filter(p=>
-				st.paramTypeOfPath(p) == 'control');
+		return ['action~content','action~menu'] // add more inner paths here
+			.map(x=>path+'~'+x).filter(p=>st.isControlType(st.paramTypeOfPath(p)))
 	}
 	fixTitles(title,path) {
 		if (title == 'control-with-condition')
@@ -96,7 +89,9 @@ st.jbEditorTree = class {
 		let val = st.valOfPath(path);
 		let compName = st.compNameOfPath(path);
 		if (path.indexOf('~') == -1)
-			compName = 'jb-component';
+			compName = 'jbComponent'
+		if (path.match(/^[^~]+~params~[0-9]+$/))
+			compName = 'jbParam'
 		if (compName && compName.match(/case$/))
       		compName = 'case';
 		let prop = path.split('~').pop();
@@ -112,6 +107,8 @@ st.jbEditorTree = class {
 
 		if (compName)
 			return jb.ui.h('div',{},[prop + '= ',jb.ui.h('span',{class:'treenode-val', title: compName+summary},jb.ui.limitStringLength(compName+summary,50))]);
+		else if (prop === '$vars')
+			return jb.ui.h('div',{},['vars= ',jb.ui.h('span',{class:'treenode-val', title: summary},jb.ui.limitStringLength(summary,50))]);
 		else if (['string','boolean','number'].indexOf(typeof val) != -1)
 			return jb.ui.h('div',{},[prop + (collapsed ? ': ': ''),jb.ui.h('span',{class:'treenode-val', title: ''+val},jb.ui.limitStringLength(''+val,50))]);
 
@@ -130,8 +127,8 @@ st.jbEditorTree = class {
 				.concat(this.specialCases(path,val) || [])
 				.concat(this.innerProfiles(path,val) || [])
 	}
-	move(from,to) {
-		return jb.move(st.refOfPath(from),st.refOfPath(to))
+	move(from,to,ctx) {
+		return jb.move(st.refOfPath(from),st.refOfPath(to),ctx)
 	}
 	disabled(path) {
 		return st.disabled(path)
@@ -155,9 +152,10 @@ st.jbEditorTree = class {
 		if (this.sugarChildren(path,val)) return [];
 		if (!this.includeCompHeader && path.indexOf('~') == -1)
 			path = path + '~impl';
+		
 		return st.paramsOfPath(path).map(p=> ({ path: path + '~' + p.id, param: p}))
 				.filter(e=>st.valOfPath(e.path) !== undefined || e.param.mandatory)
-				.map(e=>e.path)
+				.flatMap(({path})=> Array.isArray(st.valOfPath(path)) ? st.arrayChildren(path) : [path])
 	}
 	vars(path,val) {
 		return val && typeof val == 'object' && typeof val.$vars == 'object' && [path+'~$vars']
@@ -182,12 +180,6 @@ Object.assign(st,{
 			.filter(p=>st.valOfPath(path+'~'+p.id) == null && !p.mandatory)
 			.map(p=> path + '~' + p.id),
 
-  // compHeaderParams: path => {
-  //   if (path.indexOf('~') == -1)
-  //     return [
-  //   if (path.indexOf('~impl~') == -1 && path.match(/~params~[0-9]*$/))
-  //     return ['id','type','as','mandatory']
-  // }
 	nonControlChildren: (path,includeFeatures) =>
 		st.paramsOfPath(path).filter(p=>!st.isControlType(p.type))
 			.filter(p=>includeFeatures || p.id != 'features')
@@ -216,21 +208,24 @@ Object.assign(st,{
 			return [path]
 	},
 	isControlType: type =>
-		(type||'').match(/^(control|options|menu|table-field|d3.pivot)/),
+		(type||'').split('[')[0].match(/^(control|options|menu.option|table-field|d3g.pivot)$/),
 	controlParams: path =>
 		st.paramsOfPath(path).filter(p=>st.isControlType(p.type)).map(p=>p.id),
 
 	summary: path => {
 		const val = st.valOfPath(path);
-    if (path.match(/~cases~[0-9]*$/))
-      return st.summary(path+'~condition');
-		if (val == null || typeof val != 'object') return '';
+		if (path.match(/~cases~[0-9]*$/))
+			return st.summary(path+'~condition');
+		if (val == null || typeof val != 'object') 
+			return '';
+		if (path.match(/~\$vars$/))
+			return Object.keys(val).join(', ')
 		return st.paramsOfPath(path).map(x=>x.id)
-			.filter(p=> p != '$')
-			.filter(p=> p.indexOf('$jb_') != 0)
-			.map(p=>val[p])
-			.filter(v=>typeof v != 'object')
-			.join(', ');
+				.filter(p=> p != '$')
+				.filter(p=> p.indexOf('$jb_') != 0)
+				.map(p=>val[p])
+				.filter(v=>typeof v != 'object')
+				.join(', ');
 	},
 
 	shortTitle: path => {
@@ -241,7 +236,8 @@ Object.assign(st,{
 			return path.split('~')[0];
 
 		const val = st.valOfPath(path);
-		return (val && typeof val.title == 'string' && val.title) || (val && val.Name) || (val && val.remark) || (val && st.compNameOfPath(path)) || path.split('~').pop();
+		const fieldTitle = jb.asArray(val && val.features).filter(x=>x.$ == 'field.title').map(x=>x.title)[0]
+		return fieldTitle || (val && typeof val.title == 'string' && val.title) || (val && val.Name) || (val && val.remark) || (val && st.compNameOfPath(path)) || path.split('~').pop();
 	},
 	icon: path => {
 		if (st.parentPath(path)) {
@@ -271,19 +267,18 @@ Object.assign(st,{
 		if (st.isOfType(path,'action'))
 			return 'play_arrow'
 
-		return 'radio_button_unchecked';
+		return '';
 	},
-
+	previewCompsAsEntries: () => jb.entries(st.previewjb.comps).filter(e=>e[1]),
+	projectFiles: () => jb.exec('%$studio/projectSettings/jsFiles%'),
+	projectCompsAsEntries: () => {
+		const files = st.projectFiles()
+		return st.previewCompsAsEntries().filter(e=> {
+			const fn = e[1][jb.location] && e[1][jb.location][0].split('/').pop()
+			return files.indexOf(fn) != -1
+		})
+	},
 	// queries
-	isCompNameOfType: (name,type) => {
-		const _jb = st.previewjb;
-		const comp = name && _jb.comps[name];
-		if (comp) {
-			while (_jb.comps[name] && !_jb.comps[name].type && _jb.compName(_jb.comps[name].impl))
-				name = _jb.compName(_jb.comps[name].impl);
-			return (_jb.comps[name] && _jb.comps[name].type || '').indexOf(type) == 0;
-		}
-	},
 	paramDef: path => {
 		if (!st.parentPath(path)) // no param def for root
 			return;
@@ -296,7 +291,7 @@ Object.assign(st,{
 		const paramName = path.split('~').pop();
 		if (paramName.indexOf('$') == 0) // sugar
 			return params[0];
-		return params.filter(p=>p.id==paramName)[0] || {};
+		return params.filter(p=>p.id==paramName)[0];
 	},
 	isArrayType: path => ((st.paramDef(path)||{}).type||'').indexOf('[]') != -1,
 	isOfType: (path,type) => {
@@ -304,23 +299,14 @@ Object.assign(st,{
 		if (types.length > 1)
 			return types.some(t=>st.isOfType(path,t));
 		
-    if (path.indexOf('~') == -1)
+    	if (path.indexOf('~') == -1)
 		  return st.isCompNameOfType(path,type);
-		const paramDef = st.paramDef(path);
-		if (paramDef)
-			return (paramDef.type || 'data').split(',')
-				.map(x=>x.split('[')[0]).filter(_t=>type.split(',').indexOf(_t) != -1).length;
+		const paramDef = st.paramDef(path) || {};
+		if (type == 'style' && (paramDef.type || '').indexOf('.style') != -1)
+			return true
+		return (paramDef.type || 'data').split(',')
+			.map(x=>x.split('[')[0]).filter(_t=>type.split(',').indexOf(_t) != -1).length;
 	},
-	// single first param type
-	paramTypeOfPath: path => {
-		const res = ((st.paramDef(path) || {}).type || 'data').split(',')[0].split('[')[0];
-		if (res == '*')
-			return st.paramTypeOfPath(st.parentPath(path));
-		return res;
-	},
-	PTsOfPath: path =>
-		st.PTsOfType(st.paramTypeOfPath(path)),
-
 	PTsOfType: type => {
 		const single = /([^\[]*)(\[\])?/;
 		const types = [].concat.apply([],(type||'').split(',')
@@ -330,17 +316,33 @@ Object.assign(st,{
 				x=='data' ? ['data','aggregator','boolean'] : [x]));
 		const comp_arr = types.map(t=>
 			jb.entries(st.previewjb.comps)
-				.filter(c=>
-					(c[1].type||'data').split(',').indexOf(t) != -1
-					|| (c[1].typePattern && t.match(c[1].typePattern))
-				)
+				.filter(c=> st.isCompObjOfType(c[1],t))
 				.map(c=>c[0]));
 		return comp_arr.reduce((all,ar)=>all.concat(ar),[]);
 	},
+	isCompNameOfType: (name,type) => {
+		const _jb = st.previewjb;
+		const comp = name && _jb.comps[name];
+		if (comp) {
+			while (_jb.comps[name] && !(_jb.comps[name].type || _jb.comps[name].typePattern) && _jb.compName(_jb.comps[name].impl))
+				name = _jb.compName(_jb.comps[name].impl);
+			return _jb.comps[name] && st.isCompObjOfType(_jb.comps[name],type);
+		}
+	},
+	isCompObjOfType: (compObj,type) => (compObj.type||'data').split(',').indexOf(type) != -1
+		|| (compObj.typePattern && compObj.typePattern(type)),
+
+	// single first param type
+	paramTypeOfPath: path => {
+		const res = ((st.paramDef(path) || {}).type || 'data').split(',')[0].split('[')[0];
+		if (res == '$asParent' || res == '*')
+			return st.paramTypeOfPath(st.parentPath(path));
+		return res;
+	},
+	PTsOfPath: path => st.PTsOfType(st.paramTypeOfPath(path)),
 
 	profilesOfPT: pt => // in project
-		jb.entries(jb.comps).filter(c=> c[1].impl.$ == pt).map(c=>c[0])
-	,
+		jb.entries(jb.comps).filter(c=> c[1].impl.$ == pt).map(c=>c[0]),
 
 	propName: path =>{
 		if (!isNaN(Number(path.split('~').pop()))) // array elements
@@ -358,11 +360,44 @@ Object.assign(st,{
 		return path.split('~').pop();
 	},
 
-	closestCtxByPath: pathToTrace => {
+	closestCtxOfLastRun: pathToTrace => {
 		let path = pathToTrace.split('~')
+		if (pathToTrace.match(/items~0$/) && st.isExtraElem(pathToTrace)) {
+				const pipelineCtx = st.previewjb.ctxByPath[path.slice(0,-2).join('~')]
+				if (pipelineCtx)
+					return pipelineCtx.setVars(pipelineCtx.profile.$vars || {})
+			}
+		if (pathToTrace.match(/items~[1-9][0-9]*$/) && st.isExtraElem(pathToTrace)) {
+            const formerIndex = Number(pathToTrace.match(/items~([1-9][0-9]*)$/)[1])-1
+			path[path.length-1] = formerIndex
+        }
+
 		for (;path.length > 0 && !st.previewjb.ctxByPath[path.join('~')];path.pop());
-		return st.previewjb.ctxByPath[path.join('~')]
+		if (path.length)
+			return st.previewjb.ctxByPath[path.join('~')]
 	},
+
+	closestTestCtx: pathToTrace => {
+		const compId = pathToTrace.split('~')[0]
+		const statistics = new jb.jbCtx().run(studio.componentStatistics(ctx=>compId))
+		const test = statistics.referredBy && statistics.referredBy.filter(refferer=>st.isOfType(refferer,'test'))[0]
+		const _ctx = new st.previewjb.jbCtx()
+		if (test)
+			return _ctx.ctx({ profile: {$: test}, comp: test, path: ''})
+		const testData = st.previewjb.comps[compId].testData
+		if (testData)
+			return _ctx.ctx({profile: pipeline(testData, {$: compId}), path: '' })
+	},
+	pathParents(path,includeThis) {
+		const result = ['']
+		path.split('~').reduce((acc,p) => {
+			const path = [acc,p].filter(x=>x).join('~')
+			result.push(path)
+			return path
+		} ,'')
+		return result.reverse().slice(includeThis ? 0 : 1)
+	}
+	
 })
 
 })()

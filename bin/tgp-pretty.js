@@ -1,37 +1,41 @@
 jb = require('../src/core/jb-core.js')
+//require('../src/misc/spy.js')
 const {getProcessArgument} = require('./utils.js')
 const fs = require('fs');
 require('../src/loader/jb-loader.js');
 
 const JBART_DIR = '../';
-const modulesToLoad = 'common,ui-common,ui-tree,codemirror-styles,testers,pretty-print,studio,studio-tests,parsing,object-encoder'
+const modulesToLoad = 'common,ui-common,ui-tree,codemirror-styles,animate,testers,pretty-print,studio,studio-tests,parsing,object-encoder,cards,md-icons,remote,d3'
+const sampleProjects = ['style-gallery','itemlists','todomvc'
+,'html-parsing','cards-demo','animation-demo','menus-demo','studio-helper'].map(x=>`projects/${x}/${x}.js`)
 
 const filesOfModules = modules => modules.split(',').map(m=>{
     if (m == 'studio')
-        return resources[m].map(file => file.match(/\//) ? file : 'projects/studio/studio-' + file + '.js')
+        return jb_modules[m].map(file => file.match(/\//) ? file : 'projects/studio/studio-' + file + '.js')
     else if (m == 'studio-tests')
-        return resources[m].map(file => file.match(/\//) ? file : 'projects/studio-helper/studio-' + file + '-tests.js')
-    else return resources[m] 
+        return jb_modules[m].map(file => file.match(/\//) ? file : 'projects/studio-helper/studio-' + file + '-tests.js')
+    else return jb_modules[m] 
 }).flat()
 
-const testsFiles = ['data','ui','parsing','object-encoder'].map(x=>`projects/ui-tests/${x}-tests.js`)
+const testsFiles = 'data,ui,parsing,vdom,tree,watchable,object-encoder'.split(',').map(x=>`projects/ui-tests/${x}-tests.js`)
 
-const location = Symbol('location')
-jb.traceComponentFile = function(comp) {
-    const line = new Error().stack.split(/\r|\n/)[3]
-    comp[location] = line.match(/\\([^:]+):([^:]+):[^:]+$/).slice(1,3)
-}
-// load files
-filesOfModules(modulesToLoad).concat(testsFiles).filter(x=>x).filter(x=>!x.match(/material/)).filter(x=>!x.match(/.css$/))
-    .map(fn=> require(JBART_DIR+fn))
+filesOfModules(modulesToLoad).concat(testsFiles).concat(sampleProjects).filter(x=>x).filter(x=>!x.match(/material/)).filter(x=>!x.match(/.css$/))
+    .map(fn=> require(JBART_DIR+fn));
+
+filesOfModules((getProcessArgument('modules') || '')).filter(x=>x).filter(x=>!x.match(/.css$/)).map(fn=> require(JBART_DIR+fn));
+
+(getProcessArgument('filesToLoad') || '').split(',').map(fn=> require(JBART_DIR+fn))
 
 const filePattern = new RegExp(getProcessArgument('file') || '^nothing')
 function run() {
     const entries = jb.entries(jb.comps) 
-        .map(e=>({id:e[0], comp:e[1], file:e[1][location][0]}))
+        .map(e=>({id:e[0], comp:e[1], file:e[1][jb.location][0]}))
         .filter(({id}) => !id.match(/-json-format$/) && !id.match(/forward-ns-declaration$/))
+    
     entries.filter(({file}) => 
-            filePattern.test(file) )
+//        sampleProjects.find(x => file.replace(/\\/g,'/').indexOf(x) != -1)
+           filePattern.test(file)
+           )
         .forEach( args => swapComp(args))
 }
 
@@ -46,13 +50,14 @@ run()
 //     .join('\n\n')
 // console.log(content)
 //fs.writeFileSync('x.txt',content)
+function unMacro(macroId) { return macroId.replace(/([A-Z])/g, (all, s) => '-' + s.toLowerCase()) }
 
 function swapComp({id,comp,file}) {
     console.log(id)
     const fn = '../' + file
     const content = ('' + fs.readFileSync(fn))//.replace(/\r/g,'')
     const lines = content.split('\n').map(x=>x.replace(/[\s]*$/,''))
-    const lineOfComp = lines.findIndex(line=> line.indexOf(`jb.component('${id}'`) == 0)
+    const lineOfComp = lines.findIndex(line=> line.indexOf(`jb.component('${id}'`) == 0 || line.indexOf(`jb.component('${unMacro(id)}'`) == 0)
     if (lineOfComp == -1)
         return jb.logError(['can not find component', fn,id])
 

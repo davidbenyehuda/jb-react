@@ -1,10 +1,10 @@
 {
-  "name": "jbart5-react",
-  "version": "0.3.5",
-  "description": "jBart - Visual Development with react",
-  "homepage": "https://github.com/artwaresoft/jbart5-react",
+  "name": "jb-react",
+  "version": "0.6.5",
+  "description": "jBart - Visual Development with react like engine",
+  "homepage": "https://github.com/artwaresoft/jb-react",
   "bugs": {
-    "url": "https://github.com/artwaresoft/jbart5-react/issues"
+    "url": "https://github.com/artwaresoft/jb-react/issues"
   },
   "main": "dist/jbart-core.js",
   "files": [
@@ -22,20 +22,39 @@
     "eStudio": "node_modules/.bin/electron hosts/jb-electron -path:projects/studio/cards",
     "eTests": "node_modules/.bin/electron hosts/jb-electron -path:projects/ui-tests/tests.html",
     "dev": "concurrently \"npm run webpack\" \"npm run studio\" ",
-    "build": "node_modules/.bin/webpack & node bin/build.phase2 & npm run ts",
+    "webpack": "node_modules/.bin/webpack",
+    "build": "node_modules/.bin/webpack & node bin/build-libs & npm run ts",
+    "build-libs": "node bin/build-libs",
     "ts": "node bin/tgp2ts srcDir:bin/studio -out:dist/jbart",
     "pretty": "node bin/tgp-pretty -file:studio/.*",
+    "pretty-for-specific-files": "node bin/tgp-pretty -file:studio-helper -filesToLoad:projects/studio-helper/studio-helper.js",
+    "pretty-for-d3": "node bin/tgp-pretty -file:itemlist -filesToLoad:projects/itemlists/itemlists.js -modules:d3",
     "studio": "npm run studio-server & npm run helloWorld",
     "studio-server": "node bin/studio/studio-server.js",
     "helloWorld": "start http://localhost:8082/project/studio/hello-world",
     "test": "start http://localhost:8082/projects/ui-tests/tests.html",
-    "tgp2ts": "node bin/tgp2ts"
+    "pub": "yarn build-libs && git commit -am build-lib",
+    "update-corona-proj": "node node_modules/copyfiles/copyfiles -V dist/* bin/studio/* ../projects/corona-stat/node_modules/jb-react"
   },
   "bin": {
-    "tgp2ts": "bin/tgp2ts.js"
+    "studio": "bin/studio"
   },
-  "dependencies": {},
+  "dependencies": {
+    "node-fetch": "^2.6.0"
+  },
   "devDependencies": {
+    "@material/chips": "^4.0.0",
+    "@material/data-table": "^4.0.0",
+    "@material/fab": "^4.0.0",
+    "@material/floating-label": "^4.0.0",
+    "@material/ripple": "^4.0.0",
+    "@material/select": "^5.1.0",
+    "@material/slider": "^5.1.0",
+    "@material/switch": "^4.0.0",
+    "@material/tab-bar": "^5.1.0",
+    "@material/textfield": "^4.0.0",
+    "@mdi/js": "^4.9.95",
+    "animejs": "^3.1.0",
     "babel-core": "^6.24.1",
     "babel-loader": "^6.4.1",
     "babel-plugin-transform-preact-h-to-jsx": "^1.0.0",
@@ -44,6 +63,8 @@
     "babel-standalone": "^6.24.0",
     "codemirror": "^5.25.2",
     "concurrently": "^2.2.0",
+    "copyfiles": "^2.2.0",
+    "d3": "^5.12.0",
     "dragula": "^3.7.2",
     "electron": "^1.6.11",
     "eslint": "^5.9.0",
@@ -52,18 +73,17 @@
     "immutability-helper": "^2.1.2",
     "jison": "^0.4.17",
     "material-design-lite": "^1.3.0",
-    "preact": "^8.1.0",
     "pretty": "^2.0.0",
+    "puppeteer-core": "^3.0.0",
     "rxjs": "^5.3.0",
     "typescript": "^3.2.2",
-    "uglifyjs-webpack-plugin": "^0.4.3",
+    "uglifyjs-webpack-plugin": "^0.4.6",
     "webpack": "^4.31.0",
-    "webpack-cli": "^3.3.2",
-    "wspy": "github:wix-incubator/wSpy"
+    "webpack-cli": "^3.3.2"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ArtwareSoft/jbart5-react.git"
+    "url": "git+https://github.com/ArtwareSoft/jb-react.git"
   },
   "keywords": [
     "react",

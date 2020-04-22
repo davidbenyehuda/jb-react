@@ -1,158 +1,120 @@
 jb.ns('picklist')
 
-jb.component('picklist', { /* picklist */
+jb.component('picklist', {
   type: 'control',
+  description: 'select, choose, pick, choice',
   category: 'input:80',
   params: [
     {id: 'title', as: 'string', dynamic: true},
     {id: 'databind', as: 'ref', mandaroy: true, dynamic: true},
-    {
-      id: 'options',
-      type: 'picklist.options',
-      dynamic: true,
-      mandatory: true,
-      defaultValue: picklist.optionsByComma()
-    },
+    {id: 'options', type: 'picklist.options', dynamic: true, mandatory: true, templateValue: picklist.optionsByComma()},
     {id: 'promote', type: 'picklist.promote', dynamic: true},
-    {
-      id: 'style',
-      type: 'picklist.style',
-      defaultValue: picklist.native(),
-      dynamic: true
-    },
+    {id: 'style', type: 'picklist.style', defaultValue: picklist.native(), dynamic: true},
     {id: 'features', type: 'feature[]', dynamic: true}
   ],
-  impl: ctx =>
-    jb.ui.ctrl(ctx,{
-      beforeInit: cmp => {
-        cmp.recalcOptions = function() {
-          var options = ctx.params.options(ctx);
-          var groupsHash = {};
-          var promotedGroups = (ctx.params.promote() || {}).groups || [];
-          var groups = [];
-          options.filter(x=>x.text).forEach(o=>{
-            var groupId = groupOfOpt(o);
-            var group = groupsHash[groupId] || { options: [], text: groupId};
-            if (!groupsHash[groupId]) {
-              groups.push(group);
-              groupsHash[groupId] = group;
-            }
-            group.options.push({text: (o.text||'').split('.').pop(), code: o.code });
-          })
-          groups.sort((p1,p2)=>promotedGroups.indexOf(p2.text) - promotedGroups.indexOf(p1.text));
-          jb.ui.setState(cmp,{
-            groups: groups,
-            options: options,
-            hasEmptyOption: options.filter(x=>!x.text)[0]
-          })
-        }
-        cmp.recalcOptions();
-      },
-      afterViewInit: cmp => {
-        if (cmp.databindRefChanged) jb.ui.databindObservable(cmp,{watchScript: ctx})
-          .subscribe(e=>cmp.onChange && cmp.onChange(jb.val(e.ref)))
-        else jb.ui.refObservable(ctx.params.databind(),cmp,{watchScript: ctx}).subscribe(e=>
-          cmp.onChange && cmp.onChange(jb.val(e.ref)))
-      },
-    })
+  impl: ctx => jb.ui.ctrl(ctx)
 })
 
-function groupOfOpt(opt) {
-  if (!opt.group && opt.text.indexOf('.') == -1)
-    return '---';
-  return opt.group || opt.text.split('.').shift();
-}
+jb.component('picklist.init', {
+  type: 'feature',
+  impl: features(
+    calcProp('options', '%$$model/options%'),
+    calcProp('hasEmptyOption', (ctx,{$props}) => $props.options.filter(x=>!x.text)[0]),
+  )
+})
 
-jb.component('picklist.dynamic-options', { /* picklist.dynamicOptions */
+jb.component('picklist.initGroups', {
+  type: 'feature',
+  impl: calcProp({id: 'groups', phase: 20, value: (ctx,{$model, $props}) => {
+    const options = $props.options;
+    const groupsHash = {};
+    const promotedGroups = ($model.promote() || {}).groups || [];
+    const groups = [];
+    options.filter(x=>x.text).forEach(o=>{
+      const groupId = groupOfOpt(o);
+      const group = groupsHash[groupId] || { options: [], text: groupId};
+      if (!groupsHash[groupId]) {
+        groups.push(group);
+        groupsHash[groupId] = group;
+      }
+      group.options.push({text: (o.text||'').split('.').pop(), code: o.code });
+    })
+    groups.sort((p1,p2)=>promotedGroups.indexOf(p2.text) - promotedGroups.indexOf(p1.text));
+    return groups
+
+    function groupOfOpt(opt) {
+      if (!opt.group && opt.text.indexOf('.') == -1)
+        return '---';
+      return opt.group || opt.text.split('.').shift();
+    }
+  }}),
+})
+
+jb.component('picklist.dynamicOptions', {
   type: 'feature',
   params: [
     {id: 'recalcEm', as: 'single'}
   ],
-  impl: (ctx,recalcEm) => ({
-    init: cmp =>
-      recalcEm && recalcEm.subscribe &&
-        recalcEm.takeUntil( cmp.destroyed )
-        .subscribe(e=>
-            cmp.recalcOptions())
-  })
+  impl: interactive(
+    (ctx,{cmp},{recalcEm}) => {
+      const {pipe,takeUntil,subscribe} = jb.callbag
+      recalcEm && pipe(recalcEm, takeUntil( cmp.destroyed ), subscribe(() => cmp.refresh(null,{srcCtx: ctx.componentContext})))
+    }
+  )
 })
 
-jb.component('picklist.onChange', { /* picklist.onChange */
+jb.component('picklist.onChange', {
+  category: 'picklist:100',
+  description: 'on picklist selection',
   type: 'feature',
   description: 'action on picklist selection',
   params: [
     {id: 'action', type: 'action', dynamic: true}
   ],
-  impl: (ctx,action) => ({
-    init: cmp =>
-      cmp.onChange = val => action(ctx.setData(val))
-  })
+  impl: interactive(
+    (ctx,{cmp},{action}) => cmp.onValueChange = (data => action(ctx.setData(data)))
+  )
 })
 
 // ********* options
 
-jb.component('picklist.optionsByComma', { /* picklist.optionsByComma */
+jb.component('picklist.optionsByComma', {
   type: 'picklist.options',
   params: [
     {id: 'options', as: 'string', mandatory: true},
     {id: 'allowEmptyValue', type: 'boolean'}
   ],
-  impl: function(context,options,allowEmptyValue) {
-    var emptyValue = allowEmptyValue ? [{code:'',value:''}] : [];
+  impl: (ctx,options,allowEmptyValue) => {
+    const emptyValue = allowEmptyValue ? [{code:'',value:''}] : [];
     return emptyValue.concat((options||'').split(',').map(code=> ({ code: code, text: code })));
   }
 })
 
-jb.component('picklist.options', { /* picklist.options */
+jb.component('picklist.options', {
   type: 'picklist.options',
   params: [
-    {id: 'options', type: 'data', as: 'array', mandatory: true},
+    {id: 'options', type: 'data', as: 'array', dynamic: true, mandatory: true},
+    {id: 'code', as: 'string', dynamic: true, defaultValue: '%%' },
+    {id: 'text', as: 'string', dynamic: true, defaultValue: '%%'},
+    {id: 'icon', type: 'icon', dynamic: true },
     {id: 'allowEmptyValue', type: 'boolean'}
   ],
-  impl: function(context,options,allowEmptyValue) {
-    var emptyValue = allowEmptyValue ? [{code:'',value:''}] : [];
-    return emptyValue.concat(options.map(code=> ({ code: code, text: code })));
+  impl: (ctx,options,code,text,icon,allowEmptyValue) => {
+    const emptyValue = allowEmptyValue ? [{code:'',value:''}] : [];
+    return emptyValue.concat(options().map(option => ({ code: code(ctx.setData(option)), text: text(ctx.setData(option)), icon: icon(ctx.setData(option)) })));
   }
 })
 
-jb.component('picklist.coded-options', { /* picklist.codedOptions */
+jb.component('picklist.sortedOptions', {
   type: 'picklist.options',
   params: [
-    {id: 'options', as: 'array', mandatory: true},
-    {id: 'code', as: 'string', dynamic: true, mandatory: true},
-    {id: 'text', as: 'string', dynamic: true, mandatory: true},
-    {id: 'allowEmptyValue', type: 'boolean'}
-  ],
-  impl: function(context,options,code,text,allowEmptyValue) {
-    var emptyValue = allowEmptyValue ? [{code:'',value:''}] : [];
-    return emptyValue.concat(options.map(function(option) {
-      return {
-        code: code(null,option), text: text(null,option)
-      }
-    }))
-  }
-})
-
-jb.component('picklist.sorted-options', { /* picklist.sortedOptions */
-  type: 'picklist.options',
-  params: [
-    {
-      id: 'options',
-      type: 'picklist.options',
-      dynamic: true,
-      mandatory: true,
-      composite: true
-    },
-    {
-      id: 'marks',
-      as: 'array',
-      description: 'e.g input:80,group:90. 0 mark means hidden. no mark means 50'
-    }
+    {id: 'options', type: 'picklist.options', dynamic: true, mandatory: true, composite: true},
+    {id: 'marks', as: 'array', description: 'e.g input:80,group:90. 0 mark means hidden. no mark means 50'}
   ],
   impl: (ctx,optionsFunc,marks) => {
-    var options = optionsFunc() || [];
+    let options = optionsFunc() || [];
     marks.forEach(mark=> {
-        var option = options.filter(opt=>opt.code == mark.code)[0];
+        const option = options.filter(opt=>opt.code == mark.code)[0];
         if (option)
           option.mark = Number(mark.mark || 50);
     });
@@ -162,12 +124,11 @@ jb.component('picklist.sorted-options', { /* picklist.sortedOptions */
   }
 })
 
-jb.component('picklist.promote', { /* picklist.promote */
+jb.component('picklist.promote', {
   type: 'picklist.promote',
   params: [
     {id: 'groups', as: 'array'},
     {id: 'options', as: 'array'}
   ],
-  impl: (context,groups,options) =>
-    ({ groups: groups, options: options})
+  impl: ctx => ctx.params
 })

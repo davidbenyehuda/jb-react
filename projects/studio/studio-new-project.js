@@ -1,61 +1,45 @@
-
-jb.component('studio.new-project', { /* studio.newProject */
-  type: 'action,has-side-effects',
+jb.component('studio.newProject', {
   params: [
-    {id: 'name', as: 'string'},
-    {id: 'onSuccess', type: 'action', dynamic: true}
+    {id: 'project', as: 'string'},
+    {id: 'baseDir', as: 'string'}
   ],
-  impl: (ctx,name) => {
-    var request = {
-      project: name,
-      files: [
-        { fileName: `${name}.js`, content: `
-jb.component.('${name}.main', {
-  type: 'control',
-  impl :{$: 'group', controls: [ {$: 'button', title: 'my button'}] }
-})
-
-`
-        },
-        { fileName: `${name}.html`, content: `
-<!DOCTYPE html>
+  impl: obj(
+    prop('project','%$project%'),
+    prop('baseDir','%$baseDir%'),
+    prop('files', obj(prop('index.html', `<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script type="text/javascript">
-    startTime = new Date().getTime();
+  jbProjectSettings = {
+    project: '%$project%',
+    libs: 'common,ui-common,material',
+    jsFiles: ['%$project%.js'],
+  }
   </script>
-  <script type="text/javascript" src="/src/loader/jb-loader.js" modules="common,ui-common,material-css"></script>
-  <script type="text/javascript" src="/projects/${name}/${name}.js"></script>
+  <script type="text/javascript" src="/src/loader/jb-loader.js"></script>
 </head>
 <body>
-<div id="main"> </div>
-<script>
-  jb.ui.renderWidget({$:'${name}.main'},document.getElementById('main'))
-</script>
+  <script>
+    window.jb_initWidget && jb_initWidget()
+  </script>
 </body>
-</html>
-` },
-      ]
-    };
-    var headers = new Headers();
-    headers.append("Content-Type", "application/json; charset=UTF-8");
-    return fetch(`/?op=createProject`,{method: 'POST', headers: headers, body: JSON.stringify(request) })
-    .then(r =>
-        r.json())
-    .then(res=>{
-        if (res.type == 'error')
-            return jb.studio.message(`error creating project ${name}: ` + (e && e.desc));
-        jb.studio.message(`project ${name} created`);
-        return ctx.params.onSuccess();
-    })
-    .catch(e => {
-      jb.studio.message(`error creating project ${name}: ` + (e && e.desc));
-      jb.logException(e,'',ctx)
-    })
-  }
+</html>`),
+  prop('%$project%.js',`jb.ns('%$project%')
+
+jb.component('%$project%.main', {
+  type: 'control',
+  impl: group({
+    controls: [button('my button')]
+  })
+})
+`)), 'object'),
+)
 })
 
-jb.component('studio.open-new-project', { /* studio.openNewProject */ 
+//# sourceURL=%$project%.js
+
+jb.component('studio.openNewProject', {
   type: 'action',
   impl: openDialog({
     style: dialog.dialogOkCancel(),
@@ -64,20 +48,49 @@ jb.component('studio.open-new-project', { /* studio.openNewProject */
       controls: [
         editableText({
           title: 'project name',
-          databind: '%$name%',
-          style: editableText.mdlInput(),
-          features: feature.onEnter(dialog.closeContainingPopup())
+          databind: '%$dialogData/name%',
+          style: editableText.mdcInput(),
+          features: [
+            feature.onEnter(dialog.closeContainingPopup()),
+            validation(matchRegex('^[a-zA-Z_0-9]+$'), 'invalid project name')
+          ]
         })
       ],
       features: css.padding({top: '14', left: '11'})
     }),
     title: 'New Project',
-    onOK: studio.newProject('%$name%', gotoUrl('/project/studio/%$name%/')),
+    onOK: runActions(
+      Var('project','%$dialogData/name%'),
+      studio.saveNewProject('%$project%'),
+      writeValue('%$studio/project%', '%$project%'),
+      writeValue('%$studio/page%', 'main'),
+      writeValue('%$studio/profile_path%', studio.currentPagePath()),
+      () => location.reload()
+    ),
     modal: true,
     features: [
-      variable({name: 'name', watchable: true}),
       dialogFeature.autoFocusOnFirstInput(),
       dialogFeature.nearLauncherPosition({offsetLeft: '300', offsetTop: '100'})
     ]
   })
+})
+
+jb.component('studio.saveNewProject', {
+  type: 'action,has-side-effects',
+  params: [
+    { id: 'project', as: 'string' }
+  ],
+  impl: (ctx,project) => {
+    const {files, baseDir} = ctx.run(studio.newProject(()=> project))
+    return jb.studio.host.createProject({project, files, baseDir})
+        .then(r => r.json())
+        .catch(e => {
+          jb.studio.message(`error saving project ${project}: ` + (e && e.desc));
+          jb.logException(e,'',ctx)
+        })
+        .then(res=>{
+          if (res.type == 'error')
+              return jb.studio.message(`error saving project ${project}: ` + (res && jb.prettyPrint(res.desc)));
+        })
+  }
 })

@@ -1,7 +1,9 @@
-jb.component('people', { /* people */
+jb.ns('helloWorld')
+
+jb.component('dataResource.people', {
   watchableData: [
     {
-      name: 'Homer Simpson',
+      name: 'Homer asdas',
       age: 42,
       male: false,
       children: [{name: 'Bart'}, {name: 'Lisa'}, {name: 'Maggie'}]
@@ -16,10 +18,22 @@ jb.component('people', { /* people */
   ]
 })
 
-jb.component('hello-world.main', { /* helloWorld.main */
+jb.component('dataResource.room', {
+  passiveData: ''
+})
+
+jb.component('helloWorld.main', {
   type: 'control',
   impl: group({
-    controls: label('hello world')
+    controls: text({text: 'hello', features: css.borderRadius('11')})
   })
+})
+
+
+jb.component('dataResource.studio', {
+  watchableData: {
+    libToAdd: 'inner-html',
+    libsAsArray: ['common', 'ui-common', 'material', 'dragula', 'md-icons']
+  }
 })
 

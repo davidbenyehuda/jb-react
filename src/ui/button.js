@@ -1,101 +1,64 @@
 jb.ns('button')
 
-jb.component('button', { /* button */
+jb.component('button', {
   type: 'control,clickable',
   category: 'control:100,common:100',
   params: [
     {id: 'title', as: 'ref', mandatory: true, templateValue: 'click me', dynamic: true},
     {id: 'action', type: 'action', mandatory: true, dynamic: true},
-    {
-      id: 'style',
-      type: 'button.style',
-      defaultValue: button.mdlRaised(),
-      dynamic: true
-    },
+    {id: 'style', type: 'button.style', defaultValue: button.mdc(), dynamic: true},
+    {id: 'raised', as: 'boolean', dynamic: true },
     {id: 'features', type: 'feature[]', dynamic: true}
   ],
-  impl: ctx =>
-    jb.ui.ctrl(ctx,{
-      beforeInit: cmp => {
-        cmp.state.title = jb.val(ctx.params.title());
-        cmp.refresh = _ =>
-          cmp.setState({title: jb.val(ctx.params.title(cmp.ctx))});
-
-        cmp.clicked = ev => {
-          if (ev && ev.ctrlKey && cmp.ctrlAction)
-            cmp.ctrlAction(ctx.setVars({event:ev}))
-          else if (ev && ev.altKey && cmp.altAction)
-            cmp.altAction(ctx.setVars({event:ev}))
-          else
-            cmp.action(ctx.setVars({event:ev}));
-        }
-      },
-      afterViewInit: cmp =>
-          cmp.action = jb.ui.wrapWithLauchingElement(ctx.params.action, ctx, cmp.base)
-    })
+  impl: ctx => jb.ui.ctrl(ctx, ctx.run(features(
+      watchAndCalcModelProp('title'),
+      watchAndCalcModelProp('raised'),
+      defHandler('onclickHandler', (ctx,{cmp, ev}) => {
+        //const ev = event
+        if (ev && ev.ctrlKey && cmp.ctrlAction)
+          cmp.ctrlAction(cmp.ctx.setVar('event',ev))
+        else if (ev && ev.altKey && cmp.altAction)
+          cmp.altAction(cmp.ctx.setVar('event',ev))
+        else
+          cmp.action && cmp.action(cmp.ctx.setVar('event',ev))
+      }),
+      interactive( ({},{cmp}) => cmp.action = jb.ui.wrapWithLauchingElement(ctx.params.action, cmp.ctx, cmp.base)),
+      ctx => ({studioFeatures :{$: 'feature.contentEditable', param: 'title' }}),
+    )))
 })
 
-jb.component('ctrl-action', { /* ctrlAction */
+jb.component('ctrlAction', {
   type: 'feature',
   category: 'button:70',
   description: 'action to perform on control+click',
   params: [
     {id: 'action', type: 'action', mandatory: true, dynamic: true}
   ],
-  impl: (ctx,action) => ({
-      afterViewInit: cmp =>
-        cmp.ctrlAction = jb.ui.wrapWithLauchingElement(ctx.params.action, ctx, cmp.base)
-  })
+  impl: interactive(
+    (ctx,{cmp},{action}) => cmp.ctrlAction = jb.ui.wrapWithLauchingElement(action, ctx, cmp.base)
+  )
 })
 
-jb.component('alt-action', { /* altAction */
+jb.component('altAction', {
   type: 'feature',
   category: 'button:70',
   description: 'action to perform on alt+click',
   params: [
     {id: 'action', type: 'action', mandatory: true, dynamic: true}
   ],
-  impl: (ctx,action) => ({
-      afterViewInit: cmp =>
-        cmp.altAction = jb.ui.wrapWithLauchingElement(ctx.params.action, ctx, cmp.base)
-  })
+  impl: interactive(
+    (ctx,{cmp},{action}) => cmp.altAction = jb.ui.wrapWithLauchingElement(action, ctx, cmp.base)
+  )
 })
 
-jb.component('button-disabled', { /* buttonDisabled */
+jb.component('buttonDisabled', {
   type: 'feature',
   category: 'button:70',
   description: 'define condition when button is enabled',
   params: [
     {id: 'enabledCondition', type: 'boolean', mandatory: true, dynamic: true}
   ],
-  impl: (ctx,cond) => ({
-      init: cmp =>
-        cmp.state.isEnabled = ctx2 => cond(ctx.extendVars(ctx2))
-  })
-})
-
-jb.component('icon-with-action', { /* iconWithAction */
-  type: 'control,clickable',
-  category: 'control:30',
-  params: [
-    {id: 'icon', as: 'string', mandatory: true},
-    {id: 'title', as: 'string'},
-    {id: 'action', type: 'action', mandatory: true, dynamic: true},
-    {
-      id: 'style',
-      type: 'icon-with-action.style',
-      dynamic: true,
-      defaultValue: button.mdlIcon()
-    },
-    {id: 'features', type: 'feature[]', dynamic: true}
-  ],
-  impl: ctx =>
-    jb.ui.ctrl(ctx, {
-			init: cmp=>  {
-					cmp.icon = ctx.params.icon;
-					cmp.state.title = ctx.params.title;
-			},
-      afterViewInit: cmp =>
-          cmp.clicked = jb.ui.wrapWithLauchingElement(ctx.params.action, ctx, cmp.base)
-    })
+  impl: interactive(
+    (ctx,{cmp},{enabledCondition}) => cmp.isEnabled = ctx2 => enabledCondition(ctx.extendVars(ctx2))
+  )
 })

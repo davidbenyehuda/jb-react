@@ -2,8 +2,12 @@ const frame = typeof self === 'object' ? self : typeof global === 'object' ? glo
 const jb = (function() {
 function jb_run(ctx,parentParam,settings) {
   log('req', [ctx,parentParam,settings])
+  if (ctx.probe && ctx.probe.outOfTime)
+    return
+  if (jb.ctxByPath) jb.ctxByPath[ctx.path] = ctx
   const res = do_jb_run(...arguments);
-  
+  if (ctx.probe && ctx.probe.pathToTrace.indexOf(ctx.path) == 0)
+      ctx.probe.record(ctx,res)
   log('res', [ctx,res,parentParam,settings])
   return res;
 }
@@ -11,12 +15,6 @@ function jb_run(ctx,parentParam,settings) {
 function do_jb_run(ctx,parentParam,settings) {
   try {
     const profile = ctx.profile;
-    if (jb.ctxByPath)
-      jb.ctxByPath[ctx.path] = ctx
-    if (ctx.probe && (!settings || !settings.noprobe)) {
-      if (ctx.probe.pathToTrace.indexOf(ctx.path) == 0)
-        return ctx.probe.record(ctx,parentParam)
-    }
     if (profile == null || (typeof profile == 'object' && profile.$disabled))
       return castToParam(null,parentParam);
 
@@ -56,11 +54,11 @@ function do_jb_run(ctx,parentParam,settings) {
             case 'function': run.ctx.params[paramObj.name] = paramObj.outerFunc(run.ctx) ;  break;
             case 'array': run.ctx.params[paramObj.name] =
                 paramObj.array.map((prof,i) =>
-                  jb_run(new jbCtx(run.ctx,{profile: prof, forcePath: ctx.path + '~' + paramObj.path+ '~' + i, path: ''}), paramObj.param))
+                  jb_run(new jbCtx(run.ctx,{profile: prof, forcePath: paramObj.forcePath || ctx.path + '~' + paramObj.path+ '~' + i, path: ''}), paramObj.param))
                   //run.ctx.runInner(prof, paramObj.param, paramObj.path+'~'+i) )
               ; break;  // maybe we should [].concat and handle nulls
             default: run.ctx.params[paramObj.name] =
-              jb_run(new jbCtx(run.ctx,{profile: paramObj.prof, forcePath: ctx.path + '~' + paramObj.path, path: ''}), paramObj.param);
+              jb_run(new jbCtx(run.ctx,{profile: paramObj.prof, forcePath: paramObj.forcePath || ctx.path + '~' + paramObj.path, path: ''}), paramObj.param);
             //run.ctx.runInner(paramObj.prof, paramObj.param, paramObj.path)
             //jb_run(paramObj.ctx, paramObj.param);
           }
@@ -95,18 +93,14 @@ function do_jb_run(ctx,parentParam,settings) {
   function prepareGCArgs(ctx,preparedParams) {
     const delayed = preparedParams.filter(param => {
       const v = ctx.params[param.name] || {};
-      return (v.then || v.subscribe ) && param.param.as != 'observable'
+      return jb.isDelayed(v) && param.param.as != 'observable'
     });
-    if (delayed.length == 0 || typeof Observable == 'undefined')
-      return [ctx].concat(preparedParams.map(param=>ctx.params[param.name]))
+    if (delayed.length == 0)
+      return [ctx, ...preparedParams.map(param=>ctx.params[param.name])]
 
-    return Observable.from(preparedParams)
-        .concatMap(param=>
-          ctx.params[param.name])
-        .toArray()
-        .map(x=>
-          [ctx].concat(x))
-        .toPromise()
+    const {pipe,concatMap,fromIter,toPromiseArray} = jb.callbag
+    return pipe(fromIter(preparedParams), concatMap(param=> ctx.params[param.name]), toPromiseArray)
+            .then(ar => [ctx, ...ar])
   }
 }
 
@@ -114,20 +108,19 @@ function extendWithVars(ctx,vars) {
   if (!vars) return ctx;
   let res = ctx;
   for(let varname in vars || {})
-    res = new jbCtx(res,{ vars: jb.obj(varname,res.runInner(vars[varname], null,'$vars~'+varname)) });
+    res = new jbCtx(res,{ vars: {[varname]: res.runInner(vars[varname] || '%%', null,'$vars~'+varname)} });
   return res;
 }
 
 function compParams(comp) {
   if (!comp || !comp.params)
     return [];
-  return Array.isArray(comp.params) ? comp.params : entries(comp.params).map(x=>extend(x[1],jb.obj('id',x[0])));
+  return Array.isArray(comp.params) ? comp.params : entries(comp.params).map(x=>Object.assign(x[1],{id: x[0]}));
 }
 
-function prepareParams(comp,profile,ctx) {
+function prepareParams(comp_name,comp,profile,ctx) {
   return compParams(comp)
-    .filter(comp=>
-      !comp.ignore)
+    .filter(param=> !param.ignore)
     .map((param,index) => {
       const p = param.id, sugar = sugarProp(profile);
       let val = profile[p], path =p;
@@ -135,8 +128,11 @@ function prepareParams(comp,profile,ctx) {
         path = sugar[0];
         val = sugar[1];
       }
-      const valOrDefault = (val !== undefined) ? val : (param.defaultValue !== undefined ? param.defaultValue : null);
-//      const valOrDefault = (typeof val != "undefined" && val != null) ? val : (typeof param.defaultValue != 'undefined' ? param.defaultValue : null);
+      const valOrDefault = val !== undefined ? val : (param.defaultValue !== undefined ? param.defaultValue : null)
+      const usingDefault = val === undefined && param.defaultValue !== undefined
+      const forcePath = usingDefault && [comp_name, 'params', compParams(comp).indexOf(param), 'defaultValue'].join('~')
+      if (forcePath) path = ''
+
       const valOrDefaultArray = valOrDefault ? valOrDefault : []; // can remain single, if null treated as empty array
       const arrayParam = param.type && param.type.indexOf('[]') > -1 && Array.isArray(valOrDefaultArray);
 
@@ -145,24 +141,22 @@ function prepareParams(comp,profile,ctx) {
           let func;
           if (arrayParam)
             func = (ctx2,data2) =>
-              jb.flattenArray(valOrDefaultArray.map((prof,i)=>
-                runCtx.extendVars(ctx2,data2).runInner(prof,param,path+'~'+i)))
+              jb.flattenArray(valOrDefaultArray.map((prof,i)=> runCtx.extendVars(ctx2,data2).runInner(prof,param,path+'~'+i)))
           else
-            func = (ctx2,data2) =>
-                  valOrDefault != null ? runCtx.extendVars(ctx2,data2).runInner(valOrDefault,param,path) : valOrDefault;
+            func = (ctx2,data2) => jb_run(new jb.jbCtx(runCtx.extendVars(ctx2,data2),{ profile: valOrDefault, forcePath, path } ),param)
 
           Object.defineProperty(func, "name", { value: p }); // for debug
-          func.profile = (typeof(val) != "undefined") ? val : (typeof(param.defaultValue) != 'undefined') ? param.defaultValue : null;
+          func.profile = val !== undefined ? val : (param.defaultValue !== undefined ? param.defaultValue : null)
           func.srcPath = ctx.path;
           return func;
         }
-        return { name: p, type: 'function', outerFunc: outerFunc, path: path, param: param };
+        return { name: p, type: 'function', outerFunc, path, param, forcePath };
       }
 
       if (arrayParam) // array of profiles
-        return { name: p, type: 'array', array: valOrDefaultArray, param: Object.assign({},param,{type:param.type.split('[')[0],as:null}), path: path };
+        return { name: p, type: 'array', array: valOrDefaultArray, param: Object.assign({},param,{type:param.type.split('[')[0],as:null}), forcePath, path };
       else
-        return { name: p, type: 'run', prof: valOrDefault, param: param, path: path }; // ctx: new jbCtx(ctx,{profile: valOrDefault, path: p}),
+        return { name: p, type: 'run', prof: valOrDefault, param, forcePath, path };
   })
 }
 
@@ -218,10 +212,8 @@ function prepare(ctx,parentParam) {
   if (!comp.impl) { logError('component ' + comp_name + ' has no implementation', ctx); return { type:'null' } }
 
   fixByValue(profile,comp)
-  const resCtx = new jbCtx(ctx,{});
-  resCtx.parentParam = parentParam;
-  resCtx.params = {}; // TODO: try to delete this line
-  const preparedParams = prepareParams(comp,profile,resCtx);
+  const resCtx = Object.assign(new jbCtx(ctx,{}), {parentParam, params: {}})
+  const preparedParams = prepareParams(comp_name,comp,profile,resCtx);
   if (typeof comp.impl === 'function') {
     Object.defineProperty(comp.impl, 'name', { value: comp_name }); // comp_name.replace(/[^a-zA-Z0-9]/g,'_')
     return { type: 'profile', impl: comp.impl, ctx: resCtx, preparedParams: preparedParams }
@@ -238,6 +230,9 @@ function resolveFinishedPromise(val) {
   return val;
 }
 
+function isRefType(jstype) {
+  return jstype === 'ref' || jstype === 'ref[]'
+}
 function calcVar(ctx,varname,jstype) {
   let res;
   if (ctx.componentContext && ctx.componentContext.params[varname] !== undefined)
@@ -247,16 +242,16 @@ function calcVar(ctx,varname,jstype) {
   else if (ctx.vars.scope && ctx.vars.scope[varname] !== undefined)
     res = ctx.vars.scope[varname]
   else if (jb.resources && jb.resources[varname] !== undefined)
-    res = jstype == 'ref' ? jb.mainWatchableHandler.refOfPath([varname]) : jb.resource(varname)
+    res = isRefType(jstype) ? jb.mainWatchableHandler.refOfPath([varname]) : jb.resource(varname)
   else if (jb.consts && jb.consts[varname] !== undefined)
-    res = jstype == 'ref' ? jb.simpleValueByRefHandler.objectProperty(jb.consts,varname) : res = jb.consts[varname];
+    res = isRefType(jstype) ? jb.simpleValueByRefHandler.objectProperty(jb.consts,varname) : res = jb.consts[varname];
 
   return resolveFinishedPromise(res);
 }
 
-function expression(exp, ctx, parentParam) {
+function expression(_exp, ctx, parentParam) {
   const jstype = parentParam && (parentParam.ref ? 'ref' : parentParam.as);
-  exp = '' + exp;
+  let exp = '' + _exp;
   if (jstype == 'boolean') return bool_expression(exp, ctx);
   if (exp.indexOf('$debugger:') == 0) {
     debugger;
@@ -276,18 +271,12 @@ function expression(exp, ctx, parentParam) {
   if (exp.lastIndexOf('{%') == 0 && exp.indexOf('%}') == exp.length-2) // just one exp filling all string
     return expPart(exp.substring(2,exp.length-2));
 
-  exp = exp.replace(/{%(.*?)%}/g, function(match,contents) {
-      return tostring(expPart(contents,{ as: 'string'}));
-  })
-  exp = exp.replace(/{\?(.*?)\?}/g, function(match,contents) {
-      return tostring(conditionalExp(contents));
-  })
+  exp = exp.replace(/{%(.*?)%}/g, (match,contents) => tostring(expPart(contents,{ as: 'string'})))
+  exp = exp.replace(/{\?(.*?)\?}/g, (match,contents) => tostring(conditionalExp(contents)))
   if (exp.match(/^%[^%;{}\s><"']*%$/)) // must be after the {% replacer
     return expPart(exp.substring(1,exp.length-1),parentParam);
 
-  exp = exp.replace(/%([^%;{}\s><"']*)%/g, function(match,contents) {
-      return tostring(expPart(contents,{as: 'string'}));
-  })
+  exp = exp.replace(/%([^%;{}\s><"']*)%/g, (match,contents) => tostring(expPart(contents,{as: 'string'})))
   return exp;
 
   function conditionalExp(exp) {
@@ -308,61 +297,47 @@ function evalExpressionPart(expressionPart,ctx,parentParam) {
   const jstype = parentParam && (parentParam.ref ? 'ref' : parentParam.as);
   // example: %$person.name%.
 
-  const primitiveJsType = ['string','boolean','number'].indexOf(jstype) != -1;
-  // empty primitive expression - perfomance
-  // if (expressionPart == "")
-  //   return ctx.data;
-
-  const parts = expressionPart.split(/[./]/);
+  const parts = expressionPart.split(/[./[]/);
   return parts.reduce((input,subExp,index)=>pipe(input,subExp,index == parts.length-1,index == 0),ctx.data)
 
-  function pipe(input,subExp,last,first,refHandlerArg) {
-      if (subExp == '')
-          return input;
+  function pipe(input,subExp,last,first) {
+    if (subExp == '')
+       return input;
+    if (subExp.match(/]$/))
+      subExp = subExp.slice(0,-1)
 
-      const arrayIndexMatch = subExp.match(/(.*)\[([0-9]+)\]/); // x[y]
-      const refHandler = refHandlerArg || input && jb.refHandler(input) || jb.watchableHandlers.find(handler=> handler.watchable(input)) || jb.simpleValueByRefHandler;
-      if (arrayIndexMatch) {
-        const arr = arrayIndexMatch[1] == "" ? val(input) : val(pipe(val(input),arrayIndexMatch[1],false,first,refHandler));
-        const index = arrayIndexMatch[2];
-        if (!Array.isArray(arr))
-            return jb.logError('expecting array instead of ' + typeof arr, ctx, arr);
-
-        if (last && (jstype == 'ref' || !primitiveJsType))
-           return refHandler.objectProperty(arr,index,ctx);
-        if (typeof arr[index] == 'undefined')
-           arr[index] = last ? null : implicitlyCreateInnerObject(arr,index,refHandler);
-        if (last && jstype)
-           return jstypes[jstype](arr[index]);
-        return arr[index];
-     }
-
-      const functionCallMatch = subExp.match(/=([a-zA-Z]*)\(?([^)]*)\)?/);
-      if (functionCallMatch && jb.functions[functionCallMatch[1]])
+    const refHandler = jb.objHandler(input)
+    const functionCallMatch = subExp.match(/=([a-zA-Z]*)\(?([^)]*)\)?/);
+    if (functionCallMatch && jb.functions[functionCallMatch[1]])
         return tojstype(jb.functions[functionCallMatch[1]](ctx,functionCallMatch[2]),jstype,ctx);
 
-      if (first && subExp.charAt(0) == '$' && subExp.length > 1)
-        return calcVar(ctx,subExp.substr(1),last ? jstype : null)
-      const obj = val(input);
-      if (subExp == 'length' && obj && typeof obj.length != 'undefined')
-        return obj.length;
-      if (Array.isArray(obj))
-        return [].concat.apply([],obj.map(item=>pipe(item,subExp,last,false,refHandler)).filter(x=>x!=null));
+    if (subExp.match(/\(\)$/)) {
+      const func = pipe(input,subExp.slice(0,-2),last,first)
+      return typeof func == 'function' ? func(ctx) : func
+    }
 
-      if (input != null && typeof input == 'object') {
-        if (obj === null || obj === undefined) return;
-        if (typeof obj[subExp] === 'function' && (parentParam.dynamic || obj[subExp].profile))
-            return obj[subExp](ctx);
-        if (jstype == 'ref') {
-          if (last)
-            return refHandler.objectProperty(obj,subExp);
-          if (obj[subExp] === undefined)
-            obj[subExp] = implicitlyCreateInnerObject(obj,subExp,refHandler);
-        }
-        if (last && jstype)
-            return jstypes[jstype](obj[subExp]);
-        return obj[subExp];
+    if (first && subExp.charAt(0) == '$' && subExp.length > 1)
+      return calcVar(ctx,subExp.substr(1),last ? jstype : null)
+    const obj = val(input);
+    if (subExp == 'length' && obj && typeof obj.length != 'undefined')
+      return obj.length;
+    if (Array.isArray(obj) && isNaN(Number(subExp)))
+      return [].concat.apply([],obj.map(item=>pipe(item,subExp,last,false,refHandler)).filter(x=>x!=null));
+
+    if (input != null && typeof input == 'object') {
+      if (obj === null || obj === undefined) return;
+      if (typeof obj[subExp] === 'function' && (parentParam && parentParam.dynamic || obj[subExp].profile))
+          return obj[subExp](ctx);
+      if (isRefType(jstype)) {
+        if (last)
+          return refHandler.objectProperty(obj,subExp,ctx);
+        if (obj[subExp] === undefined)
+          obj[subExp] = implicitlyCreateInnerObject(obj,subExp,refHandler);
       }
+      if (last && jstype)
+          return jstypes[jstype](obj[subExp]);
+      return obj[subExp];
+    }
   }
   function implicitlyCreateInnerObject(parent,prop,refHandler) {
     jb.log('implicitlyCreateInnerObject',[...arguments]);
@@ -403,8 +378,6 @@ function bool_expression(exp, ctx, parentParam) {
   if (op == '==' || op == '!=' || op == '$=' || op == '^=') {
     const p1 = tostring(expression(trim(parts[1]), ctx, {as: 'string'}))
     let p2 = tostring(expression(trim(parts[3]), ctx, {as: 'string'}))
-    // const p1 = expression(trim(parts[1]), ctx, {as: 'string'});
-    // const p2 = expression(trim(parts[3]), ctx, {as: 'string'});
     p2 = (p2.match(/^["'](.*)["']/) || ['',p2])[1]; // remove quotes
     if (op == '==') return p1 == p2;
     if (op == '!=') return p1 != p2;
@@ -426,10 +399,7 @@ function bool_expression(exp, ctx, parentParam) {
 }
 
 function castToParam(value,param) {
-  let res = tojstype(value,param ? param.as : null);
-  if (param && param.as == 'ref' && param.whenNotRefferable && !jb.isRef(res))
-    res = tojstype(value,param.whenNotRefferable);
-  return res;
+  return tojstype(value,param ? param.as : null);
 }
 
 function tojstype(value,jstype) {
@@ -446,7 +416,13 @@ const tonumber = value => tojstype(value,'number');
 
 const jstypes = {
     asIs: x => x,
-    object: x => x,
+    object(value) {
+      if (Array.isArray(value))
+        value = value[0];
+      if (value && typeof value === 'object')
+        return val(value);
+      return {}
+    },
     string(value) {
       if (Array.isArray(value)) value = value[0];
       if (value == null) return '';
@@ -470,7 +446,8 @@ const jstypes = {
     },
     boolean(value) {
       if (Array.isArray(value)) value = value[0];
-      return val(value) ? true : false;
+      value = val(value);
+      return value && value != 'false' ? true : false;
     },
     single(value) {
       if (Array.isArray(value))
@@ -478,6 +455,11 @@ const jstypes = {
       return val(value);
     },
     ref(value) {
+      if (Array.isArray(value))
+        value = value[0];
+      return jb.asRef(value);
+    },
+    'ref[]': function(value) {
       return jb.asRef(value);
     },
     value(value) {
@@ -551,8 +533,9 @@ class jbCtx {
   }
   exp(exp,jstype) { return expression(exp, this, {as: jstype}) }
   setVars(vars) { return new jbCtx(this,{vars: vars}) }
+  setVar(name,val) { return name ? new jbCtx(this,{vars: {[name]: val}}) : this }
   setData(data) { return new jbCtx(this,{data: data}) }
-  runInner(profile,parentParam, path) { return jb_run(new jbCtx(this,{profile: profile,path: path}), parentParam) }
+  runInner(profile,parentParam, path) { return jb_run(new jbCtx(this,{profile: profile,path}), parentParam) }
   bool(profile) { return this.run(profile, { as: 'boolean'}) }
   // keeps the ctx vm and not the caller vm - needed in studio probe
   ctx(ctx2) { return new jbCtx(this,ctx2) }
@@ -569,19 +552,25 @@ class jbCtx {
     })
   }
   runItself(parentParam,settings) { return jb_run(this,parentParam,settings) }
+  callStack() {
+    const ctxStack=[]; 
+    for(let innerCtx=this; innerCtx; innerCtx = innerCtx.componentContext) 
+      ctxStack.push(innerCtx)
+    return ctxStack.map(ctx=>ctx.callerPath)
+  }
 }
 
 const logs = {};
 
 const profileOfPath = path => path.reduce((o,p)=>o && o[p], jb.comps) || {}
 
-const log = (logName, record) => frame.wSpy && frame.wSpy.log(logName, record, {
+const log = (logName, record, options) => jb.spy && jb.spy.log(logName, record, { 
   modifier: record => {
     if (record[1] instanceof jbCtx)
       record.splice(1,0,pathSummary(record[1].path))
     if (record[0] instanceof jbCtx)
       record.splice(0,0,pathSummary(record[0].path))
-}});
+} , ...options });
 
 function pathSummary(path) {
   if (!path) return ''
@@ -592,12 +581,12 @@ function pathSummary(path) {
 }
 
 function logError() {
-  frame.console && frame.console.log(...arguments)
+  frame.console && frame.console.log('%c Error: ','color: red', ...arguments)
   log('error',[...arguments])
 }
 
 function logException(e,errorStr,ctx, ...rest) {
-  frame.console && frame.console.log(...arguments)
+  frame.console && frame.console.log('%c Exception: ','color: red', ...arguments)
   log('exception',[e.stack||'',ctx,errorStr && pathSummary(ctx && ctx.path),e, ...rest])
 }
 
@@ -622,18 +611,11 @@ function objFromEntries(entries) {
   entries.forEach(e => res[e[0]] = e[1]);
   return res;
 }
-function extend(obj,obj1,obj2,obj3) {
-  if (!obj) return;
-  obj1 && Object.assign(obj,obj1);
-  obj2 && Object.assign(obj,obj2);
-  obj3 && Object.assign(obj,obj3);
-  return obj;
-}
 
 const simpleValueByRefHandler = {
   val(v) {
-    if (v.$jb_val) return v.$jb_val();
-    return v.$jb_parent ? v.$jb_parent[v.$jb_property] : v;
+    if (v && v.$jb_val) return v.$jb_val();
+    return v && v.$jb_parent ? v.$jb_parent[v.$jb_property] : v;
   },
   writeValue(to,value,srcCtx) {
     jb.log('writeValue',['valueByRefWithjbParent',value,to,srcCtx]);
@@ -650,12 +632,9 @@ const simpleValueByRefHandler = {
   },
   asRef(value) {
     return value
-    // if (value && (value.$jb_parent || value.$jb_val))
-    //     return value;
-    // return { $jb_val: () => value, $jb_path: () => [] }
   },
   isRef(value) {
-    return value && (value.$jb_parent || value.$jb_val);
+    return value && (value.$jb_parent || value.$jb_val || value.$jb_obj)
   },
   objectProperty(obj,prop) {
       if (this.isRef(obj[prop]))
@@ -670,28 +649,24 @@ let types = {}, ui = {}, rx = {}, ctxDictionary = {}, testers = {};
 return {
   run: jb_run,
   jbCtx, expression, bool_expression, profileType, compName, pathSummary, logs, logError, log, logException, tojstype, jstypes, tostring, toarray, toboolean,tosingle,tonumber,
-  types, ui, rx, ctxDictionary, testers, compParams, singleInType, val, entries, objFromEntries, extend, frame, fixByValue,
+  types, ui, rx, ctxDictionary, testers, compParams, singleInType, val, entries, objFromEntries, frame, fixByValue,
   ctxCounter: _ => ctxCounter, simpleValueByRefHandler
 }
 
 })();
 
 Object.assign(jb,{
-  comps: {}, resources: {}, consts: {}, macroDef: Symbol('macroDef'), macroNs: {}, //macros: {},
-  studio: { previewjb: jb },
-  knownNSAndCompCases: ['field'],
-  macroName: id =>
-    id.replace(/[_-]([a-zA-Z])/g,(_,letter) => letter.toUpperCase()),
-  ns: nsId =>
-    jb.registerMacro(nsId+'.$dummyComp',{})
-  ,
-  removeDataResourcePrefix: id =>
-    id.indexOf('data-resource.') == 0 ? id.slice('data-resource.'.length) : id,
-  addDataResourcePrefix: id =>
-    id.indexOf('data-resource.') == 0 ? id : 'data-resource.' + id,
-  component: (id,comp) => {
+  comps: {}, resources: {}, consts: {}, location: Symbol.for('location'), studio: { previewjb: jb },
+  removeDataResourcePrefix: id => id.indexOf('dataResource.') == 0 ? id.slice('dataResource.'.length) : id,
+  addDataResourcePrefix: id => id.indexOf('dataResource.') == 0 ? id : 'dataResource.' + id,
+
+  component: (_id,comp) => {
+    const id = jb.macroName(_id)
     try {
-      jb.traceComponentFile && jb.traceComponentFile(comp)
+      const errStack = new Error().stack.split(/\r|\n/)
+      const line = errStack.filter(x=>x && !x.match(/<anonymous>|about:blank|tgp-pretty.js|internal\/modules\/cjs|at jb_initWidget|at Object.ui.renderWidget/)).pop()
+      comp[jb.location] = (line.match(/\\?([^:]+):([^:]+):[^:]+$/) || ['','','','']).slice(1,3)
+    
       if (comp.watchableData !== undefined) {
         jb.comps[jb.addDataResourcePrefix(id)] = comp
         return jb.resource(jb.removeDataResourcePrefix(id),comp.watchableData)
@@ -700,7 +675,9 @@ Object.assign(jb,{
         jb.comps[jb.addDataResourcePrefix(id)] = comp
         return jb.const(jb.removeDataResourcePrefix(id),comp.passiveData)
       }
-    } catch(e) {}
+    } catch(e) {
+      console.log(e)
+    }
 
     jb.comps[id] = comp;
 
@@ -710,7 +687,7 @@ Object.assign(jb,{
         p.type = 'boolean'
     })
 
-    jb.registerMacro(id, comp)
+    jb.registerMacro && jb.registerMacro(id, comp)
   },
   type: (id,val) => jb.types[id] = val || {},
   resource: (id,val) => { 
@@ -721,87 +698,6 @@ Object.assign(jb,{
   },
   const: (id,val) => typeof val == 'undefined' ? jb.consts[id] : (jb.consts[id] = val || {}),
   functionDef: (id,val) => jb.functions[id] = val,
-  registerMacro: (id, profile) => {
-    const macroId = jb.macroName(id).replace(/\./g,'_')
-    const nameSpace = id.indexOf('.') != -1 && jb.macroName(id.split('.')[0])
-
-    if (checkId(macroId))
-      registerProxy(macroId)
-    if (nameSpace && checkId(nameSpace,true) && !frame[nameSpace]) {
-      registerProxy(nameSpace, true)
-      jb.macroNs[nameSpace] = true
-    }
-
-    function registerProxy(proxyId) {
-      frame[proxyId] = new Proxy(()=>0, { 
-          get: (o,p) => {
-            if (typeof p === 'symbol') return true
-            return frame[proxyId+'_'+p] || genericMacroProcessor(proxyId,p)
-          },
-          apply: function(target, thisArg, allArgs) {
-            const {args,system} = splitSystemArgs(allArgs)
-            return Object.assign(processMacro(args),system)
-          }
-      })
-    }
-  
-    function splitSystemArgs(allArgs) {
-      const args=[], system={} // system props: constVar, remark
-      allArgs.forEach(arg=>{
-        if (arg && typeof arg === 'object' && (jb.comps[arg.$] || {}).isSystem)
-          jb.comps[arg.$].macro(system,arg)
-        else
-          args.push(arg)
-      })
-      if (args.length == 1 && typeof args[0] === 'object') {
-        jb.asArray(args[0].vars).forEach(arg => jb.comps[arg.$].macro(system,arg))
-        args[0].remark && jb.comps.remark.macro(system,args[0])
-      }
-      return {args,system}
-    }
-
-    function checkId(macroId,isNS) {
-      if (frame[macroId] && !frame[macroId][jb.macroDef]) {
-        jb.logError(macroId +' is reserved by system or libs. please use a different name')
-        return false
-      }
-      if (frame[macroId] !== undefined && !isNS && !jb.macroNs[macroId])
-        jb.logError(macroId + ' is defined more than once, using last definition ' + id)
-      if (frame[macroId] !== undefined && !isNS && jb.macroNs[macroId] && jb.knownNSAndCompCases.indexOf[macroId] == -1)
-        jb.logError(macroId + ' is already defined as ns, using last definition ' + id)
-      return true;
-    }
-   
-    function processMacro(args) {
-      if (args.length == 0)
-        return {$: id }
-      const params = profile.params || []
-      const firstParamIsArray = (params[0] && params[0].type||'').indexOf('[]') != -1
-      if (params.length == 1 && firstParamIsArray) // pipeline, or, and, plus
-        return {$: id, [params[0].id]: args }
-      if (!(profile.usageByValue === false) && (params.length < 3 || profile.usageByValue))
-        return {$: id, ...jb.objFromEntries(args.filter((_,i)=>params[i]).map((arg,i)=>[params[i].id,arg])) }
-      if (args.length == 1 && !Array.isArray(args[0]) && typeof args[0] === 'object')
-        return {$: id, ...args[0]}
-      if (args.length == 1 && params.length)
-        return {$: id, [params[0].id]: args[0]}
-      if (args.length == 2 && params.length > 1)
-        return {$: id, [params[0].id]: args[0], [params[1].id]: args[1]}
-      debugger;
-    }
-    const unMacro = macroId => macroId.replace(/([A-Z])/g, (all,s)=>'-'+s.toLowerCase())
-    function genericMacroProcessor(ns,macroId) {
-      return (...allArgs) => {
-        const {args,system} = splitSystemArgs(allArgs)
-        const out = {$: unMacro(ns) +'.'+ unMacro(macroId)}
-        if (args.length == 1 && typeof args[0] == 'object' && !jb.compName(args[0]))
-          Object.assign(out,args[0])
-        else
-          Object.assign(out,{$byValue: args})
-        return Object.assign(out,system)
-      }
-    }
-   },
 // force path - create objects in the path if not exist
   path: (object,path,value) => {
     let cur = object;
@@ -809,11 +705,7 @@ Object.assign(jb,{
     path = jb.asArray(path)
 
     if (typeof value == 'undefined') {  // get
-      for(let i=0;i<path.length;i++) {
-        cur = cur[path[i]];
-        if (cur === null || cur === undefined) return cur;
-      }
-      return cur;
+      return path.reduce((o,k)=>o && o[k], object)
     } else { // set
       for(let i=0;i<path.length;i++)
         if (i == path.length-1)
@@ -823,18 +715,7 @@ Object.assign(jb,{
       return value;
     }
   },
-  ownPropertyNames: obj => {
-    let res = [];
-    for (let i in (obj || {}))
-      if (obj.hasOwnProperty(i))
-        res.push(i);
-    return res;
-  },
-  obj: (k,v,base) => {
-    let ret = base || {};
-    ret[k] = v;
-    return ret;
-  },
+
   compareArrays: (arr1, arr2) => {
     if (arr1 === arr2)
       return true;
@@ -848,8 +729,7 @@ Object.assign(jb,{
     }
     return true;
   },
-  range: (start, count) =>
-    Array.apply(0, Array(count)).map((element, index) => index + start),
+  range: (start, count) => Array.apply(0, Array(count)).map((element, index) => index + start),
 
   flattenArray: items => {
     let out = [];
@@ -861,20 +741,26 @@ Object.assign(jb,{
     })
     return out;
   },
-  synchArray: ar => {
-    const isSynch = ar.filter(v=> v &&  (typeof v.then == 'function' || typeof v.subscribe == 'function')).length == 0;
+  isDelayed: v => {
+    if (!v || v.constructor === {}.constructor) return
+    else if (typeof v === 'object')
+      return Object.prototype.toString.call(v) === "[object Promise]"
+    else if (typeof v === 'function')
+      return jb.callbag.isCallbag(v)
+  },
+  toSynchArray: __ar => {
+    const ar = jb.asArray(__ar)
+    const isSynch = ar.filter(v=> jb.isDelayed(v)).length == 0;
     if (isSynch) return ar;
 
-    const _ar = ar.filter(x=>x).map(v=>
-      (typeof v.then == 'function' || typeof v.subscribe == 'function') ? v : [v]);
-
-    return jb.rx.Observable.from(_ar)
-          .concatMap(x=>x)
-          .flatMap(v =>
-            Array.isArray(v) ? v : [v])
-          .toArray()
-          .toPromise()
+    const {pipe, fromIter, toPromiseArray, concatMap,flatMap} = jb.callbag
+    return pipe(
+          fromIter(ar),
+          concatMap(x=>x),
+          flatMap(v => Array.isArray(v) ? v : [v]),
+          toPromiseArray)
   },
+  subscribe: (source,listener) => jb.callbag.subscribe(listener)(source),
   unique: (ar,f) => {
     f = f || (x=>x);
     let keys = {}, res = [];
@@ -889,18 +775,15 @@ Object.assign(jb,{
   isEmpty: o => Object.keys(o).length === 0,
   isObject: o => o != null && typeof o === 'object',
   asArray: v => v == null ? [] : (Array.isArray(v) ? v : [v]),
-
-  equals: (x,y) =>
-    x == y || jb.val(x) == jb.val(y),
-
-  delay: mSec =>
-    new Promise(r=>{setTimeout(r,mSec)}),
+  filterEmpty: obj => Object.entries(obj).reduce((a,[k,v]) => (v == null ? a : {...a, [k]:v}), {}),
+  equals: (x,y) => x == y || jb.val(x) == jb.val(y),
+  delay: mSec => new Promise(r=>{setTimeout(r,mSec)}),
 
   // valueByRef API
   extraWatchableHandlers: [],
   extraWatchableHandler: (handler,oldHandler) => { 
     jb.extraWatchableHandlers.push(handler)
-    const oldHandlerIndex = oldHandler && jb.extraWatchableHandlers.indexOf(oldHandler)
+    const oldHandlerIndex = jb.extraWatchableHandlers.indexOf(oldHandler)
     if (oldHandlerIndex != -1)
       jb.extraWatchableHandlers.splice(oldHandlerIndex,1)
     jb.watchableHandlers = [jb.mainWatchableHandler, ...jb.extraWatchableHandlers].map(x=>x)
@@ -918,262 +801,122 @@ Object.assign(jb,{
     return f(handler)
   },
  
+  // handler for ref
   refHandler: ref => {
     if (ref && ref.handler) return ref.handler
     if (jb.simpleValueByRefHandler.isRef(ref)) 
       return jb.simpleValueByRefHandler
     return jb.watchableHandlers.find(handler => handler.isRef(ref))
   },
+  // handler for object (including the case of ref)
+  objHandler: obj => obj && jb.refHandler(obj) || jb.watchableHandlers.find(handler=> handler.watchable(obj)) || jb.simpleValueByRefHandler,
   asRef: obj => {
     const watchableHanlder = jb.watchableHandlers.find(handler => handler.watchable(obj) || handler.isRef(obj))
     if (watchableHanlder)
       return watchableHanlder.asRef(obj)
     return jb.simpleValueByRefHandler.asRef(obj)
   },
-  writeValue: (ref,value,srcCtx) => jb.safeRefCall(ref, h=>h.writeValue(ref,value,srcCtx)),
-  splice: (ref,args,srcCtx) => jb.safeRefCall(ref, h=>h.splice(ref,args,srcCtx)),
-  move: (ref,toRef,srcCtx) => jb.safeRefCall(ref, h=>h.move(ref,toRef,srcCtx)),
-  push: (ref,toAdd,srcCtx) => jb.safeRefCall(ref, h=>h.push(ref,toAdd,srcCtx)),
+  writeValue: (ref,value,srcCtx) => !srcCtx.probe && jb.safeRefCall(ref, h=>h.writeValue(ref,value,srcCtx)),
+  objectProperty: (obj,prop,srcCtx) => jb.objHandler(obj).objectProperty(obj,prop,srcCtx),
+  splice: (ref,args,srcCtx) => !srcCtx.probe && jb.safeRefCall(ref, h=>h.splice(ref,args,srcCtx)),
+  move: (ref,toRef,srcCtx) => !srcCtx.probe && jb.safeRefCall(ref, h=>h.move(ref,toRef,srcCtx)),
+  push: (ref,toAdd,srcCtx) => !srcCtx.probe && jb.safeRefCall(ref, h=>h.push(ref,toAdd,srcCtx)),
   isRef: ref => jb.refHandler(ref),
-  isWatchable: ref => false, // overriden by the watchable-ref.js (if loaded)
+  isWatchable: () => false, // overriden by the watchable-ref.js (if loaded)
   isValid: ref => jb.safeRefCall(ref, h=>h.isValid(ref)),
   refreshRef: ref => jb.safeRefCall(ref, h=>h.refresh(ref)),
+  sessionStorage: (id,val) => val == undefined ? jb.frame.sessionStorage[id] : jb.frame.sessionStorage[id] = val
 })
 if (typeof self != 'undefined')
   self.jb = jb
 if (typeof module != 'undefined')
   module.exports = jb;
 
-(function() {
-'use strict'
-const spySettings = { 
-    moreLogs: 'req,res,focus,apply,check,suggestions,writeValue,render,createReactClass,renderResult,probe,setState,immutable,pathOfObject,refObservable,scriptChange,resLog', 
-	includeLogs: 'exception,error',
-	stackFilter: /wSpy|jb_spy|Object.log|node_modules/i,
-    extraIgnoredEvents: [], MAX_LOG_SIZE: 10000, DEFAULT_LOGS_COUNT: 300, GROUP_MIN_LEN: 5
-}
-const frame = typeof window === 'object' ? window : typeof self === 'object' ? self : typeof global === 'object' ? global : {};
+Object.assign(jb, {
+    macroDef: Symbol('macroDef'), macroNs: {}, 
+    macroName: id => id.replace(/[_-]([a-zA-Z])/g, (_, letter) => letter.toUpperCase()),
+    ns: nsIds => nsIds.split(',').forEach(nsId => jb.registerMacro(nsId + '.$dummyComp', {})),
+    registerMacro: (id, profile) => {
+        const macroId = jb.macroName(id).replace(/\./g, '_')
+        const nameSpace = id.indexOf('.') != -1 && jb.macroName(id.split('.')[0])
 
-function initSpy({Error, settings, wSpyParam, memoryUsage}) {
-    const systemProps = ['index', 'time', '_time', 'mem', 'source']
+        if (checkId(macroId))
+            registerProxy(macroId)
+        if (nameSpace && checkId(nameSpace, true) && !jb.frame[nameSpace]) {
+            registerProxy(nameSpace, true)
+            jb.macroNs[nameSpace] = true
+        }
 
-    const isRegex = x => Object.prototype.toString.call(x) === '[object RegExp]'
-    const isString = x => typeof x === 'string' || x instanceof String
-    
-    return {
-		ver: 7,
-		logs: {},
-		wSpyParam,
-		otherSpies: [],
-		enabled: () => true,
-		log(logName, record, {takeFrom, funcTitle, modifier} = {}) {
-			const init = () => {
-				if (!this.includeLogs) {
-					const includeLogsFromParam = (this.wSpyParam || '').split(',').filter(x => x[0] !== '-').filter(x => x)
-					const excludeLogsFromParam = (this.wSpyParam || '').split(',').filter(x => x[0] === '-').map(x => x.slice(1))
-					this.includeLogs = settings.includeLogs.split(',').concat(includeLogsFromParam).filter(log => excludeLogsFromParam.indexOf(log) === -1).reduce((acc, log) => {
-						acc[log] = true
-						return acc
-					}, {})
-				}
-			}
-			const shouldLog = (logName, record) =>
-				this.wSpyParam === 'all' || Array.isArray(record) && this.includeLogs[logName] && !settings.extraIgnoredEvents.includes(record[0])
+        function registerProxy(proxyId) {
+            jb.frame[proxyId] = new Proxy(() => 0, {
+                get: (o, p) => {
+                    if (typeof p === 'symbol') return true
+                    return jb.frame[proxyId + '_' + p] || genericMacroProcessor(proxyId, p)
+                },
+                apply: function (target, thisArg, allArgs) {
+                    const { args, system } = splitSystemArgs(allArgs)
+                    return Object.assign(processMacro(args), system)
+                }
+            })
+        }
 
-			init()
-			this.logs[logName] = this.logs[logName] || []
-			this.logs.$counters = this.logs.$counters || {}
-			this.logs.$counters[logName] = this.logs.$counters[logName] || 0
-			this.logs.$counters[logName]++
-			if (!shouldLog(logName, record)) {
-				return
-			}
-			this.logs.$index = this.logs.$index || 0
-			record.index = this.logs.$index++
-			record.source = this.source(takeFrom)
-			const now = new Date()
-			record._time = `${now.getSeconds()}:${now.getMilliseconds()}`
-			record.time = now.getTime()
-			record.mem = memoryUsage() / 1000000
-			if (this.logs[logName].length > settings.MAX_LOG_SIZE) {
-				this.logs[logName] = this.logs[logName].slice(-1 * Math.floor(settings.MAX_LOG_SIZE / 2))
-			}
-			if (!record[0] && typeof funcTitle === 'function') {
-				record[0] = funcTitle()
-			}
-			if (!record[0] && record.source) {
-				record[0] = record.source[0]
-			}
-			if (typeof modifier === 'function') {
-				modifier(record)
-			}
-			this.logs[logName].push(record)
-		},
-		getCallbackName(cb, takeFrom) {
-			if (!cb) {
-				return
-			}
-			if (!cb.name || isString(cb.name) && cb.name.startsWith('bound ')) {
-				if (Array.isArray(cb.source)) {
-					return cb.source[0]
-				}
-				const nameFromSource = this.source(takeFrom)
-				if (Array.isArray(nameFromSource)) {
-					return nameFromSource
-				}
-			}
-			return cb.name.trim()
-		},
-		logCallBackRegistration(cb, logName, record, takeFrom) {
-			cb.source = this.source(takeFrom)
-			this.log(logName, [this.getCallbackName(cb, takeFrom), ...record], takeFrom)
-		},
-		logCallBackExecution(cb, logName, record, takeFrom) {
-			this.log(logName, [this.getCallbackName(cb, takeFrom), cb.source, ...record], takeFrom)
-		},
-		source(takeFrom) {
-			Error.stackTraceLimit = 50
-			const frames = [frame]
-			while (frames[0].parent && frames[0] !== frames[0].parent) {
-				frames.unshift(frames[0].parent)
-			}
-			let stackTrace = frames.reverse().map(frame => new frame.Error().stack).join('\n').split(/\r|\n/).map(x => x.trim()).slice(4).
-				filter(line => line !== 'Error').
-				filter(line => !settings.stackFilter.test(line))
-			if (takeFrom) {
-				const firstIndex = stackTrace.findIndex(line => line.indexOf(takeFrom) !== -1)
-				stackTrace = stackTrace.slice(firstIndex + 1)
-			}
-			const line = stackTrace[0] || ''
-			return [
-				line.split(/at |as /).pop().split(/ |]/)[0],
-				line.split('/').pop().slice(0, -1).trim(),
-				...stackTrace
-			]
-		},
-        
-        // browsing methods
-		resetParam: wSpyParam => {
-			this.wSpyParam = wSpyParam;
-			this.includeLogs = null;
-		},
-		purge(count) {
-			const countFromEnd = -1 * (count || settings.DEFAULT_LOGS_COUNT)
-			Object.keys(this.logs).forEach(log => this.logs[log] = this.logs[log].slice(countFromEnd))
-		},
-		setLogs(logs) {
-			if (logs === 'all')
-				this.wSpyParam = 'all'
-			this.includeLogs = (logs||'').split(',').reduce((acc,log) => {acc[log] = true; return acc },{})
-		},
-		clear(logs) {
-			Object.keys(this.logs).forEach(log => delete this.logs[log])
-		},
-        search(pattern) {
-			if (isRegex(pattern)) {
-				return this.merged(x => pattern.test(x.join(' ')))
-			} else if (isString(pattern)) {
-				return this.merged(x => x.join(' ').indexOf(pattern) !== -1)
-			} else if (Number.isInteger(pattern)) {
-				return this.merged().slice(-1 * pattern)
-			}
-		},
-		merged(filter) {
-			return [].concat.apply([], Object.keys(this.logs).filter(log => Array.isArray(this.logs[log])).map(module =>
-				this.logs[module].map(arr => {
-					const res = [arr.index, module, ...arr]
-					systemProps.forEach(p => {
-						res[p] = arr[p]
-					})
-					return res
-				}))).
-				filter((e, i, src) => !filter || filter(e, i, src)).
-				sort((x, y) => x.index - y.index)
-		},
-		all(filter) {
-			return this.merged(filter)
-		},
-		grouped(filter) {
-			const merged = this.merged(filter)
-			const countFromEnd = -1 * settings.DEFAULT_LOGS_COUNT
-			return [].concat.apply([], merged.reduce((acc, curr, i, arr) => {
-				const group = acc[acc.length - 1]
-				if (!group) {
-					return [newGroup(curr)]
-				}
-				if (curr[1] === group[0][1]) {
-					group.push(curr)
-				} else {
-					if (group.length > settings.GROUP_MIN_LEN) {
-						group.unshift(`[${group.length}] ${group[0][1]}`)
-					}
-					acc.push(newGroup(curr))
-				}
-				if (i === arr.length - 1 && group.length > settings.GROUP_MIN_LEN) {
-					group.unshift(`[${group.length}] ${group[0][1]}`)
-				}
-				return acc
-			}, []).map(e => e.length > settings.GROUP_MIN_LEN ? [e] : e)).
-				slice(countFromEnd).
-				map((x, i, arr) => {
-					const delay = i === 0 ? 0 : x.time - arr[i - 1].time
-					x[0] = `${x[0]} +${delay}`
-					return x
-				})
-			function newGroup(rec) {
-				const res = [rec]
-				res.time = rec.time
-				return res
-			}
-		}
-	}
-} 
+        function splitSystemArgs(allArgs) {
+            const args = [], system = {} // system props: constVar, remark
+            allArgs.forEach(arg => {
+                if (arg && typeof arg === 'object' && (jb.comps[arg.$] || {}).isSystem)
+                    jb.comps[arg.$].macro(system, arg)
+                else
+                    args.push(arg)
+            })
+            if (args.length == 1 && typeof args[0] === 'object') {
+                jb.asArray(args[0].vars).forEach(arg => jb.comps[arg.$].macro(system, arg))
+                args[0].remark && jb.comps.remark.macro(system, args[0])
+            }
+            return { args, system }
+        }
 
-const noop = () => false;
-const noopSpy = {
-    log: noop, getCallbackName: noop, logCallBackRegistration: noop, logCallBackExecution: noop, enabled: noop
-}
+        function checkId(macroId, isNS) {
+            if (jb.frame[macroId] && !jb.frame[macroId][jb.macroDef]) {
+                jb.logError(macroId + ' is reserved by system or libs. please use a different name')
+                return false
+            }
+            if (jb.frame[macroId] !== undefined && !isNS && !jb.macroNs[macroId] && !macroId.match(/_\$dummyComp$/))
+                jb.logError(macroId.replace(/_/g,'.') + ' is defined more than once, using last definition ' + id)
+            return true;
+        }
 
-frame.initwSpy = function(settings = {}) {
-	const getParentUrl = () => { try { return frame.parent.location.href } catch(e) {} }
-	const getUrl = () => { try { return frame.location.href } catch(e) {} }
-	const getSpyParam = url => (url.match('[?&]w[sS]py=([^&]+)') || ['', ''])[1]
-	const getFirstLoadedSpy = () => { try { return frame.parent && frame.parent.wSpy || frame.wSpy } catch(e) {} }
-	function saveOnFrame(wSpy) { 
-		try { 
-			frame.wSpy = wSpy;  
-			if (frame.parent)
-				frame.parent.wSpy = wSpy
-		} catch(e) {} 
-		return wSpy
-	}
-
-	function doInit() {
-		try {
-			if (settings.forceNoop)
-				return noopSpy
-			const existingSpy = getFirstLoadedSpy();
-			if (existingSpy && existingSpy.enabled())
-				return existingSpy;
-	
-			const wSpyParam = settings.wSpyParam || getSpyParam(getParentUrl() || '') || getSpyParam(getUrl() || '')
-			if (wSpyParam) return initSpy({
-				Error: frame.Error,
-				memoryUsage: () => frame.performance && performance.memory && performance.memory.usedJSHeapSize,
-				wSpyParam,
-				settings: Object.assign(settings, spySettings)
-			});
-		} catch (e) {}
-		return noopSpy
-	}
-
-	return saveOnFrame(doInit())
-}
-
-if (typeof window == 'object') {
-	frame.initwSpy()
-}
-
-})()
+        function processMacro(args) {
+            if (args.length == 0)
+                return { $: id }
+            const params = profile.params || []
+            const firstParamIsArray = (params[0] && params[0].type || '').indexOf('[]') != -1
+            if (params.length == 1 && firstParamIsArray) // pipeline, or, and, plus
+                return { $: id, [params[0].id]: args }
+            const macroByProps = args.length == 1 && typeof args[0] === 'object' &&
+                (params[0] && args[0][params[0].id] || params[1] && args[0][params[1].id])
+            if ((profile.macroByValue || params.length < 3) && profile.macroByValue !== false && !macroByProps)
+                return { $: id, ...jb.objFromEntries(args.filter((_, i) => params[i]).map((arg, i) => [params[i].id, arg])) }
+            if (args.length == 1 && !Array.isArray(args[0]) && typeof args[0] === 'object' && !args[0].$)
+                return { $: id, ...args[0] }
+            if (args.length == 1 && params.length)
+                return { $: id, [params[0].id]: args[0] }
+            if (args.length == 2 && params.length > 1)
+                return { $: id, [params[0].id]: args[0], [params[1].id]: args[1] }
+            debugger;
+        }
+        //const unMacro = macroId => macroId.replace(/([A-Z])/g, (all, s) => '-' + s.toLowerCase())
+        function genericMacroProcessor(ns, macroId) {
+            return (...allArgs) => {
+                const { args, system } = splitSystemArgs(allArgs)
+                const out = { $: `${ns}.${macroId}` }
+                if (args.length == 1 && typeof args[0] == 'object' && !jb.compName(args[0]))
+                    Object.assign(out, args[0])
+                else
+                    Object.assign(out, { $byValue: args })
+                return Object.assign(out, system)
+            }
+        }
+    }
+})
 ;
 

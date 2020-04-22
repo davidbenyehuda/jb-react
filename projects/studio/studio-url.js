@@ -1,58 +1,84 @@
-jb.component('url-history.map-studio-url-to-resource', { /* urlHistory.mapStudioUrlToResource */
+jb.component('urlHistory.mapStudioUrlToResource', {
   type: 'action',
   params: [
     {id: 'resource', as: 'string', mandatory: true},
     {id: 'onUrlChange', type: 'action', dynamic: true}
   ],
-  impl: function(context,resource) {
-        if (jb.ui.location || typeof window == 'undefined') return;
-        const base = 'studio'
-        const isProject = location.pathname.indexOf('/project') == 0;
-        const params = isProject ? ['project','page','profile_path'] : ['entry_file','shown_comp','profile_path']
+  impl: function(ctx,resource) {
+        if (jb.ui.location || typeof window == 'undefined' || jb.frame.jbInvscode || jb.studio.urlHistoryInitialized) return;
+        jb.studio.urlHistoryInitialized = true
+        const base = location.pathname.indexOf('studio-bin') != -1 ? 'studio-bin' : 'studio'
+
+        const urlFormat = location.pathname.match(/\.html$/) ? {
+            urlToObj({search}) {
+                const _search = search.substring(1);
+                return _search ? JSON.parse('{"' + decodeURI(_search).replace(/"/g, '\\"').replace(/&/g, '","').replace(/=/g,'":"') + '"}') : {}
+            },
+            objToUrl(obj) {
+                const search = '?' + params.map(p=>({p,val: obj[p] !== undefined && jb.tostring(obj[p])}))
+                    .filter(e=>e.val)
+                    .map(({p,val})=>`${p}=${val}`)
+                    .join('&');
+                return {search}
+            }
+        } : {
+            urlToObj({pathname}) {
+                const vals = pathname.substring(pathname.indexOf(base) + base.length).split('/')
+                        .map(x=>decodeURIComponent(x))
+                const res = {};
+                params.forEach((p,i) =>
+                    res[p] = (vals[i+1] || ''));
+                return res;
+            },
+            objToUrl(obj) {
+                const split_base = location.pathname.split(`/${base}`);
+                const pathname = split_base[0] + `/${base}/` +
+                    params.map(p=>encodeURIComponent(jb.tostring(obj[p])||''))
+                    .join('/').replace(/\/*$/,'');
+                return {pathname}
+            }
+        }
+
+        const hasSearchUrl = location.pathname.match(/\.html$/);
+        const params = ['project','page','profile_path'].concat( hasSearchUrl ? ['host','hostProjectId'] : [])
 
         jb.ui.location = History.createBrowserHistory();
-        jb.ui.location.path = _ => location.pathname;
-        const browserUrlEm = jb.rx.Observable.create(obs=>
-            jb.ui.location.listen(x=>
-                obs.next(x.pathname)));
+        const _search = location.search.substring(1);
+        if (_search)
+            Object.assign(ctx.exp('%$queryParams%'),JSON.parse('{"' + decodeURI(_search).replace(/"/g, '\\"').replace(/&/g, '","').replace(/=/g,'":"') + '"}'))
 
-        function urlToObj(path) {
-            const vals = path.substring(path.indexOf(base) + base.length).split('/')
-                    .map(x=>decodeURIComponent(x))
-            let res = {};
-            params.forEach((p,i) =>
-                res[p] = (vals[i+1] || ''));
-            if (!isProject) {
-                res.project = res.shown_comp.split('.')[0]
-                res.page = res.shown_comp.split('.').pop()
-            }
-            return res;
-        }
-        function objToUrl(obj) {
-            const split_base = jb.ui.location.path().split(`/${base}`);
-            const url = split_base[0] + `/${base}/` +
-                params.map(p=>encodeURIComponent(jb.tostring(obj[p])||''))
-                .join('/');
-            return url.replace(/\/*$/,'');
-        }
+        const {pipe, fromIter, subscribe,merge,create,map,filter} = jb.callbag
+        const browserUrlEm = create(obs=> jb.ui.location.listen(x=> obs(x)))
 
-        const databindEm = jb.ui.resourceChange
-            .filter(e=> e.path[0] == resource)
-              .map(_=> jb.resource(resource))
-            .filter(obj=>
-                obj[params[0]])
-            .map(obj=>
-                objToUrl(obj));
+        const databindEm = pipe(jb.ui.resourceChange(),
+            filter(e=> e.path[0] == resource && params.indexOf(e.path[1]) != -1),
+            map(_=> jb.resource(resource)),
+            filter(obj=> obj[params[0]]),
+            map(obj=> urlFormat.objToUrl(obj)))
 
-      browserUrlEm.merge(databindEm)
-            .startWith(jb.ui.location.path())
-            .distinctUntilChanged()
-            .subscribe(url => {
-                jb.ui.location.push(Object.assign({},jb.ui.location.location, {pathname: url}));
-                var obj = urlToObj(url);
+        pipe(
+            merge(fromIter([location]),browserUrlEm,databindEm),
+            subscribe(loc => {
+                const obj = urlFormat.urlToObj(loc);
                 params.forEach(p=>
-                    jb.writeValue(context.exp(`%$${resource}/${p}%`,'ref'),jb.tostring(obj[p])));
-                context.params.onUrlChange(context.setData(url));
-            })
+                    jb.writeValue(ctx.exp(`%$${resource}/${p}%`,'ref'), jb.tostring(obj[p]) ,ctx) );
+                // change the url if needed
+                if (loc.pathname && loc.pathname === location.pathname) return
+                if (loc.search && loc.search === location.search) return
+                jb.ui.location.push(Object.assign({},jb.ui.location.location, loc));
+                ctx.params.onUrlChange(ctx.setData(loc));
+        }))
     }
+})
+
+jb.component('dataResource.queryParams', {
+  passiveData: {
+    
+  }
+})
+
+jb.component('dataResource.queryParams', {
+  passiveData: {
+
+  }
 })

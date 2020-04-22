@@ -1,5 +1,5 @@
 
-jb.component('studio.format-css', { /* studio.formatCss */
+jb.component('studio.formatCss', {
   params: [
     {id: 'css', as: 'string'}
   ],
@@ -12,7 +12,7 @@ jb.component('studio.format-css', { /* studio.formatCss */
   }
 })
 
-jb.component('studio.open-style-menu', { /* studio.openStyleMenu */
+jb.component('studio.openStyleMenu', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -25,15 +25,14 @@ jb.component('studio.open-style-menu', { /* studio.openStyleMenu */
           action: [
             studio.makeLocal('%$path%'),
             studio.openStyleEditor('%$styleSource/innerPath%'),
-            studio.openProperties()
+            studio.openProperties(true)
           ],
-          icon: 'build',
+          icon: icon('build'),
           showCondition: "%$styleSource/type% == 'global'"
         }),
         menu.action({
           title: 'Extract style as a reusable component',
-          action: {'$': 'studio.open-make-global-style', path: '%$path%'},
-          icon: 'build',
+          icon: icon('build'),
           showCondition: "%$styleSource/type% == 'inner'"
         }),
         menu.action({
@@ -48,18 +47,19 @@ jb.component('studio.open-style-menu', { /* studio.openStyleMenu */
   })
 })
 
-jb.component('studio.style-editor', { /* studio.styleEditor */
+jb.component('studio.styleEditor', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
   ],
   impl: group({
     controls: [
-      tabs({
-        tabs: [
+      group({
+        style: group.tabs(),
+        controls: [
           group({
             title: 'css',
-            style: layout.vertical(3),
+            layout: layout.vertical(3),
             controls: [
               editableText({
                 title: 'css',
@@ -73,7 +73,7 @@ jb.component('studio.style-editor', { /* studio.styleEditor */
                   onCtrlEnter: studio.refreshPreview()
                 })
               }),
-              label({title: 'jsx', style: label.htmlTag('h5')}),
+              text({text: 'jsx', style: text.htmlTag('h5')}),
               editableText({
                 title: 'template',
                 databind: pipeline(studio.templateAsJsx('%$path%~template'), studio.pretty('%%')),
@@ -116,25 +116,24 @@ jb.component('studio.style-editor', { /* studio.styleEditor */
                   onOK: writeValue(studio.ref('%$path%~template'), studio.jsxToH('%$jsx%')),
                   features: [variable({name: 'jsx', value: 'paste your jsx here', watchable: 'true'})]
                 }),
-                style: button.mdlRaised()
+                style: button.mdc()
               })
             ]
           }),
           group({
             title: 'Inteliscript editor',
-            style: layout.vertical(),
+            layout: layout.vertical(),
             controls: [
               studio.jbEditor('%$path%')
             ]
           })
-        ],
-        style: tabs.simple()
+        ]
       })
     ]
   })
 })
 
-jb.component('studio.style-source', { /* studio.styleSource */
+jb.component('studio.styleSource', {
   params: [
     {id: 'path', as: 'string'}
   ],
@@ -150,7 +149,7 @@ jb.component('studio.style-source', { /* studio.styleSource */
   }
 })
 
-jb.component('studio.open-style-editor', { /* studio.openStyleEditor */
+jb.component('studio.openStyleEditor', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -162,7 +161,7 @@ jb.component('studio.open-style-editor', { /* studio.openStyleEditor */
     menu: button({
       title: 'style menu',
       action: studio.openStyleMenu('%$path%'),
-      style: button.mdlIcon('menu'),
+      style: button.mdcIcon('menu'),
       features: css('button { background: transparent }')
     }),
     title: 'Style Editor - %$styleSource/path%',
@@ -170,7 +169,7 @@ jb.component('studio.open-style-editor', { /* studio.openStyleEditor */
   })
 })
 
-jb.component('studio.style-editor-options', { /* studio.styleEditorOptions */ 
+jb.component('studio.styleEditorOptions', {
   type: 'menu.option',
   params: [
     {id: 'path', as: 'string'}

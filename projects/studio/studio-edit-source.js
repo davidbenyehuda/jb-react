@@ -1,7 +1,7 @@
 (function() {
 const st = jb.studio;
 
-jb.component('source-editor.refresh-editor', { /* sourceEditor.refreshEditor */
+jb.component('sourceEditor.refreshEditor', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -9,7 +9,7 @@ jb.component('source-editor.refresh-editor', { /* sourceEditor.refreshEditor */
   impl: (ctx,path) =>  ctx.vars.refreshEditor && ctx.vars.refreshEditor(path)
 })
 
-jb.component('source-editor.prop-options', { /* sourceEditor.propOptions */
+jb.component('sourceEditor.propOptions', {
   params: [
     {id: 'path', as: 'string'}
   ],
@@ -20,12 +20,12 @@ jb.component('source-editor.prop-options', { /* sourceEditor.propOptions */
   }
 })
 
-jb.component('source-editor.store-to-ref', { /* sourceEditor.storeToRef */
+jb.component('sourceEditor.storeToRef', {
   type: 'action',
   impl: ctx => ctx.vars.editor && ctx.vars.editor() && ctx.vars.editor().storeToRef()
 })
 
-jb.component('source-editor.first-param-as-array-path', { /* sourceEditor.firstParamAsArrayPath */
+jb.component('sourceEditor.firstParamAsArrayPath', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -37,7 +37,7 @@ jb.component('source-editor.first-param-as-array-path', { /* sourceEditor.firstP
   }
 })
 
-jb.component('studio.open-editor', { /* studio.openEditor */
+jb.component('studio.openEditor', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -47,7 +47,7 @@ jb.component('studio.open-editor', { /* studio.openEditor */
   }
 })
 
-jb.component('studio.editable-source', { /* studio.editableSource */
+jb.component('studio.editableSource', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
@@ -65,18 +65,23 @@ jb.component('studio.editable-source', { /* studio.editableSource */
         }
       }
     }),
-    features: [feature.onKey('Ctrl-I', studio.openJbEditor('%$path%')), textEditor.init()]
+    features: [
+      interactive(
+        (ctx,{cmp}) => ctx.vars.$dialog.refresh = () => cmp.refresh && cmp.refresh(null,{srcCtx: ctx.componentContext})
+      ),
+      feature.onKey('Ctrl-I', studio.openJbEditor('%$path%'))
+    ]
   })
 })
 
 
-jb.component('studio.edit-source', { /* studio.editSource */
+jb.component('studio.editSource', {
   type: 'action',
   params: [
     {id: 'path', as: 'string', defaultValue: studio.currentProfilePath()}
   ],
   impl: openDialog({
-    style: dialog.editSourceStyle({id: 'edit-source', width: 600}),
+    style: dialog.editSourceStyle({id: 'editor', width: 600}),
     content: studio.editableSource('%$path%'),
     title: studio.shortTitle('%$path%'),
     features: [
@@ -86,7 +91,44 @@ jb.component('studio.edit-source', { /* studio.editSource */
   })
 })
 
-jb.component('studio.goto-editor-secondary', { /* studio.gotoEditorSecondary */
+jb.component('studio.viewAllFiles', {
+  type: 'action',
+  params: [
+    {id: 'path', as: 'string', defaultValue: studio.currentProfilePath()}
+  ],
+  impl: openDialog({
+    style: dialog.studioFloating({id: 'edit-source', width: 600}),
+    content: group({
+      title: 'project files',
+      controls: [
+        picklist({
+          databind: '%$file%',
+          options: picklist.options(keys('%$content/files%'))
+        }),
+        editableText({
+          title: '',
+          databind: property('%$file%', '%$content/files%'),
+          style: editableText.studioCodemirrorTgp(),
+          features: watchRef('%$file%')
+        })
+      ],
+      features: [
+        variable({name: 'file', value: '%$studio/project%.html', watchable: true}),
+        group.wait({
+          for: ctx => jb.studio.projectUtils.projectContent(ctx),
+          varName: 'content'
+        })
+      ]
+    }),
+    title: '%$studio/project% files',
+    features: [
+      css('.jb-dialog-content-parent {overflow-y: hidden}'),
+      dialogFeature.resizer(true)
+    ]
+  })
+})
+
+jb.component('studio.gotoEditorSecondary', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -99,7 +141,7 @@ jb.component('studio.goto-editor-secondary', { /* studio.gotoEditorSecondary */
   })
 })
 
-jb.component('studio.goto-editor-first', { /* studio.gotoEditorFirst */
+jb.component('studio.gotoEditorFirst', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -112,7 +154,7 @@ jb.component('studio.goto-editor-first', { /* studio.gotoEditorFirst */
   })
 })
 
-jb.component('studio.goto-editor-options', { /* studio.gotoEditorOptions */
+jb.component('studio.gotoEditorOptions', {
   type: 'menu.option',
   params: [
     {id: 'path', as: 'string'}
@@ -122,7 +164,7 @@ jb.component('studio.goto-editor-options', { /* studio.gotoEditorOptions */
   )
 })
 
-jb.component('studio.open-edit-property', { /* studio.openEditProperty */
+jb.component('studio.openEditProperty', {
   type: 'action',
   params: [
     {id: 'path', as: 'string'}
@@ -272,7 +314,7 @@ jb.component('studio.open-edit-property', { /* studio.openEditProperty */
   )
 })
 
-jb.component('source-editor.suggestions', {
+jb.component('sourceEditor.suggestions', {
   params: [
     {id: 'path', as: 'string'}
   ],
@@ -282,18 +324,21 @@ jb.component('source-editor.suggestions', {
     Var('paramDef', studio.paramDef('%$actualPath%')),
     or(
       startsWith('obj-separator', '%$pathType%'),
-      inGroup( list('close-profile', 'open-profile', 'open-by-value', 'close-by-value'), '%$pathType%')
+      inGroup(
+          list('close-profile', 'open-profile', 'open-by-value', 'close-by-value'),
+          '%$pathType%'
+        )
     ),
-      pipeline(studio.paramsOfPath('%$actualPath%'),'%id%'),
-      If(
-        '%$paramDef/options%',  
-        split({separator: ',', text: '%$paramDef/options%', part: 'all'}),
-        studio.PTsOfType('%$actualPath%')
-      )
+    pipeline(studio.paramsOfPath('%$actualPath%'), '%id%'),
+    If(
+      '%$paramDef/options%',
+      split({separator: ',', text: '%$paramDef/options%', part: 'all'}),
+      studio.PTsOfType(firstSucceeding('%$paramDef/type%', 'data'))
     )
+  )
 })
 
-jb.component('source-editor.add-prop', { /* sourceEditor.addProp */
+jb.component('sourceEditor.addProp', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
@@ -323,7 +368,7 @@ jb.component('source-editor.add-prop', { /* sourceEditor.addProp */
           })
         ]
       }),
-      label({title: '', features: css('{border: 1px solid white;}')})
+      text({text: '', features: css('{border: 1px solid white;}')})
     ],
     features: [
       variable({
@@ -336,13 +381,13 @@ jb.component('source-editor.add-prop', { /* sourceEditor.addProp */
   })
 })
 
-jb.component('source-editor.suggestions-itemlist', { /* sourceEditor.suggestionsItemlist */ 
+jb.component('sourceEditor.suggestionsItemlist', {
   params: [
     {id: 'path', as: 'string'}
   ],
   impl: itemlist({
     items: sourceEditor.propOptions('%$path%'),
-    controls: label({title: '%text%', features: [css.padding({left: '3', right: '2'})]}),
+    controls: text({text: '%text%', features: [css.padding({left: '3', right: '2'})]}),
     features: [
       id('suggestions-itemlist'),
       itemlist.noContainer(),
@@ -360,5 +405,128 @@ jb.component('source-editor.suggestions-itemlist', { /* sourceEditor.suggestions
   })
 })
 
+jb.component('sourceEditor.filesOfProject', {
+  impl: '%$studio/projectSettings/jsFiles%'
+})
+
+jb.component('studio.githubHelper', {
+  type: 'action',
+  impl: openDialog({
+    style: dialog.studioFloating({id: 'github-helper', width: 600}),
+    content: group({
+      controls: [
+        group({
+          title: 'properties',
+          layout: layout.flex({spacing: '100'}),
+          controls: [
+            editableText({title: 'github username', databind: '%$properties/username%'}),
+            editableText({title: 'github repository', databind: '%$properties/repository%'})
+          ]
+        }),
+        group({
+          controls: [
+            group({
+              title: 'share urls',
+              layout: layout.flex({justifyContent: 'flex-start', spacing: ''}),
+              controls: [
+                html({
+                  title: 'share link',
+                  html: '<a href=\"%$projectLink%\" target=\"_blank\" style=\"color:rgb(63,81,181)\">share link: %$projectLink%</a>',
+                  features: css.width('350')
+                }),
+                html({
+                  title: 'share with studio link',
+                  html: '<a href=\"https://artwaresoft.github.io/jb-react/bin/studio/studio-cloud.html?host=github&hostProjectId=%$projectLink%\" target=\"_blank\"  style=\"color:rgb(63,81,181)\">share with studio link</a>'
+                })
+              ],
+              features: [
+                variable({
+                  name: 'projectLink',
+                  value: pipeline(
+                    'https://%$properties/username%.github.io',
+                    '%%/%$properties/repository%',
+                    data.if(
+                        equals('%$properties/repository%', '%$studio/project%'),
+                        '%%',
+                        '%%/%$studio/project%'
+                      )
+                  )
+                }),
+                css('>a { color:rgb(63,81,181) }')
+              ]
+            }),
+            html({title: 'html', html: '<hr>'}),
+            group({
+              title: 'options',
+              controls: [
+                picklist({databind: '%$item%', options: picklist.options(keys('%$content%'))}),
+                editableText({
+                  databind: pipeline(
+                    property('%$item%', '%$content%'),
+                    replace({find: 'USERNAME', replace: '%$properties/username%'}),
+                    replace({find: 'REPOSITORY', replace: '%$properties/repository%'})
+                  ),
+                  style: editableText.codemirror({mode: 'text'}),
+                  features: [watchRef('%$item%')]
+                })
+              ],
+              features: [
+                variable({name: 'item', value: 'new project', watchable: true}),
+                variable({
+                  name: 'content',
+                  value: obj(
+                    prop(
+                        'new project',
+                        `1) Create a new github repository
+2) Open cmd at your project directory and run the following commands
+
+
+git init
+echo mode_modules > .gitignore
+git add .
+git config --global user.name "FIRST_NAME LAST_NAME"
+git config --global user.email "MY_NAME@example.com"
+git commit -am first-commit
+git remote add origin https://github.com/USERNAME/REPOSITORY.git
+git push origin master`
+                      ),
+                    prop(
+                        'commit',
+                        `Open cmd at your project directory and run the following commands
+
+git add .
+git commit -am COMMIT_REMARK
+git push origin master
+
+#explanation
+git add -  mark all files to be handled by the local repository.
+Needed only if you added new files
+git commit - adds the changes to your local git repository
+git push - copy the local repostiry to github's cloud repository`
+                      )
+                  ),
+                  watchable: false
+                })
+              ]
+            })
+          ],
+          features: watchRef({ref: '%$properties%', includeChildren: 'yes'})
+        })
+      ],
+      features: [
+        variable({
+          name: 'properties',
+          value: obj(prop('username', 'user1'), prop('repository', 'repo1')),
+          watchable: true
+        })
+      ]
+    }),
+    title: 'github helper',
+    features: [
+      css('.jb-dialog-content-parent {overflow-y: hidden}'),
+      dialogFeature.resizer(true)
+    ]
+  })
+})
 
 })()

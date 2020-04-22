@@ -1,16 +1,17 @@
-jb.component('jb-component', { /* jbComponent */
+jb.component('jbComponent', {
   type: 'any',
   params: [
     {id: 'type', as: 'string', mandatory: true},
     {id: 'category', as: 'string'},
     {id: 'description', as: 'string'},
     {id: 'params', type: 'jb-param[]'},
-    {id: 'impl', dynamicType: '%type%', mandatory: true}
+    {id: 'impl', type: '*', dynamicType: '%type%', mandatory: true},
+    {id: 'testData', description: 'used as input in inteliscript'}
   ],
   impl: ctx => ctx.params
 })
 
-jb.component('jb-param', { /* jbParam */ 
+jb.component('jbParam', {
   type: 'jb-param',
   singleInType: true,
   params: [

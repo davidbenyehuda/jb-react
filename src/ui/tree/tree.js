@@ -1,186 +1,243 @@
 (function() {
 jb.ns('tree')
 
-class NodeLine extends jb.ui.Component {
-	constructor(props) {
-		super();
-		this.state.expanded = props.tree.expanded[props.path];
-		const tree = props.tree, path = props.path;
-		this.state.flip = _ => {
-			tree.expanded[path] = !(tree.expanded[path]);
-			this.setState({expanded:tree.expanded[path]});
-			tree.redraw();
-		};
-	}
-
-	render(props,state) {
-		const h = jb.ui.h, tree= props.tree, model = props.tree.nodeModel;
-
-		const path = props.path;
-		const collapsed = tree.expanded[path] ? '' : ' collapsed';
-		const nochildren = model.isArray(path) ? '' : ' nochildren';
-		const title = model.title(path,!tree.expanded[path]);
-		const icon = model.icon ? model.icon(path) : 'radio_button_unchecked';
-
-		return h('div',{ class: `treenode-line${collapsed}`},[
-			h('button',{class: `treenode-expandbox${nochildren}`, onclick: _=> state.flip() },[
-				h('div',{ class: 'frame'}),
-				h('div',{ class: 'line-lr'}),
-				h('div',{ class: 'line-tb'}),
-			]),
-			h('i',{class: 'material-icons', style: 'font-size: 16px; margin-left: -4px; padding-right:2px'}, icon),
-			h('span',{class: 'treenode-label'}, title),
-		])
-	}
-}
-
-class TreeNode extends jb.ui.Component {
-	constructor() {
-		super();
-	}
-	render(props,state) {
-		var h = jb.ui.h, tree = props.tree, path = props.path, model = props.tree.nodeModel;
-		var disabled = model.disabled && model.disabled(props.path) ? 'jb-disabled' : '';
-		var clz = [props.class, model.isArray(path) ? 'jb-array-node': '',disabled].filter(x=>x).join(' ');
-		jb.log('render-tree',['Node',props.path,...arguments])
-
-		return h('div',{class: clz, path: props.path},
-			[h(NodeLine,{ tree: tree, path: path })].concat(!tree.expanded[path] ? [] : h('div',{ class: 'treenode-children'} ,
-					tree.nodeModel.children(path).map(childPath=>
-						h(TreeNode,{ tree: tree, path: childPath, class: 'treenode' + (tree.selected == childPath ? ' selected' : '') })
-					))
-			))
-
-	}
-}
-
- //********************* jBart Components
-
-jb.component('tree', { /* tree */
+jb.component('tree', {
   type: 'control',
   params: [
     {id: 'nodeModel', type: 'tree.node-model', dynamic: true, mandatory: true},
-    {id: 'style', type: 'tree.style', defaultValue: tree.ulLi(), dynamic: true},
-    {id: 'features', type: 'feature[]', dynamic: true}
+    {id: 'style', type: 'tree.style', defaultValue: tree.expandBox({}), dynamic: true},
+    {id: 'features', type: 'feature[]', dynamic: true, as: 'array'}
   ],
-  impl: ctx => {
-		var nodeModel = ctx.params.nodeModel();
-		if (!nodeModel)
-			return jb.logError('missing nodeModel in tree',ctx);
-		var tree = { nodeModel: nodeModel };
-		var ctx = ctx.setVars({$tree: tree});
-		return jb.ui.ctrl(ctx, {
-			class: 'jb-tree', // define host element to keep the wrapper
-			beforeInit: cmp => {
-				cmp.refresh = () => cmp.tree.redraw(true)
+  impl: context => {
+	  const tree = {}
+	  const ctx = context.setVars({ $tree: tree })
+	  const nodeModel = ctx.params.nodeModel()
+	  if (!nodeModel)
+	  	return jb.logError('missing nodeModel in tree',ctx);
+	  return jb.ui.ctrl(ctx, features(
+			defHandler('flipExpandCollapse', (ctx,{cmp}) => {
+				const path = cmp.elemToPath(event.target)
+				if (!path) debugger
+				cmp.state.expanded[path] = !(cmp.state.expanded[path]);
+				cmp.refresh(null,{srcCtx: ctx.componentContext});
+			}),
+			interactiveProp('model', '%$$model.nodeModel%'),
+			interactive( (ctx,{cmp}) => {
+				cmp.state.expanded =  { [cmp.model.rootPath] : true }
+				tree.cmp = cmp
+				cmp.selectionEmitter = jb.callbag.subject()
+				tree.redraw = cmp.redraw = () => cmp.refresh(null,{srcCtx: ctx.componentContext})
 
-				cmp.tree = Object.assign( tree, {
-					redraw: strong => { // needed after dragula that changes the DOM
-						cmp.setState({empty: strong});
-						if (strong)
-							jb.delay(1).then(_=>
-								cmp.setState({empty: false}))
-					},
-					expanded: jb.obj(tree.nodeModel.rootPath, true),
-					elemToPath: el =>
-						jb.ui.closest(el,'.treenode') && jb.ui.closest(el,'.treenode').getAttribute('path'),
-					selectionEmitter: new jb.rx.Subject(),
-				})
-			},
-			afterViewInit: cmp =>
-				tree.el = cmp.base
-		})
+				cmp.expandPath = path => {
+					const changed = jb.ui.treeExpandPath(cmp.state.expanded,path)
+					if (changed) cmp.redraw()
+					return changed
+				}
+				cmp.elemToPath = el => el && (el.getAttribute('path') || jb.ui.closest(el,'.treenode') && jb.ui.closest(el,'.treenode').getAttribute('path'))
+			}),
+			feature.init( (ctx,{cmp}) => {
+				cmp.model = nodeModel
+				cmp.state.expanded =  cmp.state.expanded || {}
+				jb.ui.treeExpandPath(cmp.state.expanded, nodeModel.rootPath)
+			}),
+			css('{user-select: none}')
+		))
 	}
 })
 
-jb.component('tree.ul-li', { /* tree.ulLi */
+jb.ui.treeExpandPath = jb.ui.treeExpandPath || ((expanded, path) => {
+	let changed = false
+	path.split('~').reduce((base, x) => {
+			const inner = base ? (base + '~' + x) : x;
+			changed = changed || (!expanded[inner])
+			expanded[inner] = true;
+			return inner;
+		},'')
+	return changed
+})
+
+class TreeRenderer {
+	constructor(args) {
+		Object.assign(this,args)
+		this.model = this.cmp.model
+	}
+	renderTree() {
+		const {model,h} = this
+		if (this.noHead)
+			return h('div',{}, model.children(model.rootPath).map(childPath=> this.renderNode(childPath)))
+		return this.renderNode(model.rootPath)
+	}
+	renderNode(path) {
+		const {cmp,model,h} = this
+		const disabled = model.disabled && model.disabled(path) ? 'jb-disabled' : ''
+		const clz = ['treenode', model.isArray(path) ? 'jb-array-node': '',disabled].filter(x=>x).join(' ')
+		const children = cmp.state.expanded[path] ? [h('div',{ class: 'treenode-children'} ,
+			model.children(path).map(childPath=>this.renderNode(childPath)))] : []
+
+		return h('div',{class: clz, path}, [ this.renderLine(path), ...children ] )
+	}
+}
+
+jb.component('tree.plain', {
   type: 'tree.style',
-  impl: customStyle(
-    (cmp,state,h) => {
-			var tree = cmp.tree;
-			return h('div',{},
-				state.empty ? h('span') : h(TreeNode,{ tree: tree, path: tree.nodeModel.rootPath,
-				class: 'jb-control-tree treenode' + (tree.selected == tree.nodeModel.rootPath ? ' selected': '') })
-			)
+  params: [
+    {id: 'showIcon', as: 'boolean', type: 'boolean'},
+    {id: 'noHead', as: 'boolean', type: 'boolean'}
+  ],
+  impl: (ctx,showIcon,noHead) => ctx.run(customStyle({
+	template: (cmp,state,h) => {
+		function renderLine(path) {
+			const model = cmp.model
+			const icon = model.icon && model.icon(path) || 'radio_button_unchecked';
+			return h('div',{ class: `treenode-line`},[
+				model.isArray(path) ? h('i',{class:'material-icons noselect flip-icon', onclick: 'flipExpandCollapse', path },
+					cmp.state.expanded[path] ? 'keyboard_arrow_down' : 'keyboard_arrow_right') : h('span',{class: 'no-children-holder'}),
+				...(showIcon ? [h('i',{class: 'material-icons treenode-icon'}, icon)] : []),
+				h('span',{class: 'treenode-label'}, model.title(path,!cmp.state.expanded[path])),
+			])
 		}
-  )
+		return new TreeRenderer({cmp,h,showIcon,noHead,renderLine}).renderTree(cmp.model.rootPath)
+	},
+	css: `|>.treenode-children { padding-left: 10px; min-height: 7px }
+	|>.treenode-label { margin-top: -1px }
+
+	|>.treenode-label .treenode-val { color: red; padding-left: 4px; }
+	|>.treenode-line { display: flex; box-orient: horizontal; padding-bottom: 3px; align-items: center }
+
+	|>.treenode { display: block }
+	|>.flip-icon { font-size: 16px; margin-right: 2px;}
+	|>.treenode-icon { font-size: 16px; margin-right: 2px; }
+
+	|>.treenode.selected>*>.treenode-label,.treenode.selected>*>.treenode-label  { background: #D9E8FB;}
+	`
+  }))
 })
 
-jb.component('tree.no-head', { /* tree.noHead */
+jb.component('tree.expandBox', {
   type: 'tree.style',
-  impl: customStyle(
-    (cmp,state,h) => {
-		var tree = cmp.tree, path = tree.nodeModel.rootPath;
-		return h('div',{},tree.nodeModel.children(path).map(childPath=>
-				 h(TreeNode,{ tree: tree, path: childPath, class: 'treenode' + (tree.selected == childPath ? ' selected' : '') }))
-		)}
-  )
+  params: [
+    {id: 'showIcon', as: 'boolean', type: 'boolean'},
+    {id: 'noHead', as: 'boolean', type: 'boolean'},
+    {id: 'lineWidth', as: 'string', defaultValue: '300px'}
+  ],
+  impl: (ctx,showIcon,noHead,lineWidth) => ctx.run(customStyle({
+	  template: (cmp,state,h) => {
+		function renderLine(path) {
+			const model = cmp.model
+			const icon = model.icon && model.icon(path) || 'radio_button_unchecked';
+			const nochildren = model.isArray(path) ? '' : ' nochildren'
+			const collapsed = cmp.state.expanded[path] ? '' : ' collapsed';
+			const showIconClass = showIcon ? ' showIcon' : '';
+
+			return h('div',{ class: `treenode-line${collapsed}`},[
+				h('button',{class: `treenode-expandbox${nochildren}${showIconClass}`, onclick: 'flipExpandCollapse', path },[
+					h('div',{ class: 'frame'}),
+					h('div',{ class: 'line-lr'}),
+					h('div',{ class: 'line-tb'}),
+				]),
+				...(showIcon ? [h('i',{class: 'material-icons treenode-icon'}, icon)] : []),
+				h('span',{class: 'treenode-label'}, model.title(path,!cmp.state.expanded[path])),
+			])
+		}
+		return new TreeRenderer({cmp,h,showIcon,noHead,renderLine}).renderTree(cmp.model.rootPath)
+	  },
+	  css: `|>.treenode-children { padding-left: 10px; min-height: 7px }
+	|>.treenode-label { margin-top: -2px }
+	|>.treenode-label .treenode-val { color: red; padding-left: 4px; }
+	|>.treenode-line { display: flex; box-orient: horizontal; width: ${lineWidth}; padding-bottom: 3px;}
+
+	|>.treenode { display: block }
+	|>.treenode.selected>*>.treenode-label,.treenode.selected>*>.treenode-label  { background: #D9E8FB;}
+
+	|>.treenode-icon { font-size: 16px; margin-right: 2px; }
+	|>.treenode-expandbox { border: none; background: none; position: relative; width:9px; height:9px; padding: 0; vertical-align: top;
+		margin-top: 5px;  margin-right: 5px;  cursor: pointer;}
+	|>.treenode-expandbox.showIcon { margin-top: 3px }
+	|>.treenode-expandbox div { position: absolute; }
+	|>.treenode-expandbox .frame { background: #F8FFF9; border-radius: 3px; border: 1px solid #91B193; top: 0; left: 0; right: 0; bottom: 0; }
+	|>.treenode-expandbox .line-lr { background: #91B193; top: 4px; left: 2px; width: 5px; height: 1px; }
+	|>.treenode-expandbox .line-tb { background: #91B193; left: 4px; top: 2px; height: 5px; width: 1px; display: none;}
+	|>.treenode-line.collapsed .line-tb { display: block; }
+	|>.treenode.collapsed .line-tb { display: block; }
+	|>.treenode-expandbox.nochildren .frame { display: none; }
+	|>.treenode-expandbox.nochildren .line-lr { display: none; }
+	|>.treenode-expandbox.nochildren .line-tb { display: none;}`
+	}))
 })
 
-jb.component('tree.selection', { /* tree.selection */
+jb.component('tree.selection', {
   type: 'feature',
   params: [
     {id: 'databind', as: 'ref', dynamic: true},
-    {id: 'autoSelectFirst', type: 'boolean'},
+    {id: 'autoSelectFirst', as: 'boolean', type: 'boolean'},
     {id: 'onSelection', type: 'action', dynamic: true},
     {id: 'onRightClick', type: 'action', dynamic: true}
   ],
-  impl: (ctx,databind) => ({
-	    onclick: true,
-  		afterViewInit: cmp => {
-		  const tree = cmp.tree;
-		  const selectedRef = databind()
+  impl: features(
+    ctx => ({
+		  onclick: true,
+		  componentDidUpdate : cmp => cmp.setSelected(cmp.state.selected),
+	  }),
+    feature.init(
+        (ctx,{cmp},{databind}) => {
+		cmp.state.expanded = cmp.state.expanded||{}
+		const selectedPath = jb.val(databind())
+		selectedPath && jb.ui.treeExpandPath(cmp.state.expanded, selectedPath.split('~').slice(0,-1).join('~'))
+	  },
+        5
+      ),
+    interactive(
+        (ctx,{cmp},{databind,autoSelectFirst,onSelection,onRightClick}) => {
+			const selectedRef = databind()
+			const {pipe,map,filter,subscribe,merge,distinctUntilChanged} = jb.callbag
+			const databindObs = jb.isWatchable(selectedRef) &&
+				pipe(jb.ui.refObservable(selectedRef,cmp,{srcCtx: ctx}), map(e=>jb.val(e.ref)))
 
-  		  const databindObs = jb.isWatchable(selectedRef) && jb.ui.refObservable(selectedRef,cmp,{watchScript: ctx}).map(e=>jb.val(e.ref));
+			cmp.setSelected = selected => {
+				cmp.state.selected = selected
+				if (!cmp.base) return
+				jb.ui.findIncludeSelf(cmp.base,'.treenode.selected').forEach(elem=>elem.classList.remove('selected'))
+				jb.ui.findIncludeSelf(cmp.base,'.treenode').filter(elem=> elem.getAttribute('path') === selected)
+					.forEach(elem=> {elem.classList.add('selected'); elem.scrollIntoViewIfNeeded()})
+			}
+			cmp.getSelected = () => cmp.state.selected = cmp.elemToPath(jb.ui.findIncludeSelf(cmp.base,'.treenode.selected')[0])
 
-		  tree.selectionEmitter
-		  	.merge(databindObs || [])
-		  	.merge(cmp.onclick.map(event =>
-		  		tree.elemToPath(event.target)))
-		  	.filter(x=>x)
-		  	.map(x=>
-		  		jb.val(x))
-//	  		.distinctUntilChanged()
-		  	.subscribe(selected=> {
-		  	  if (tree.selected == selected)
-		  	  	return;
-			  tree.selected = selected;
-			  selected.split('~').slice(0,-1).reduce(function(base, x) {
-				  var path = base ? (base + '~' + x) : x;
-				  tree.expanded[path] = true;
-				  return path;
-			  },'')
-			  if (selectedRef)
-				  jb.writeValue(selectedRef, selected);
-			  ctx.params.onSelection(cmp.ctx.setData(selected));
-			  tree.redraw();
-		  });
 
-		  cmp.onclick.subscribe(_=>
-		  	tree.regainFocus && tree.regainFocus()
-		  );
+			pipe(
+				merge(
+					cmp.selectionEmitter, databindObs, pipe(cmp.onclick, map(event => cmp.elemToPath(event.target)))),
+				distinctUntilChanged(),
+				filter(x=>x),
+				map(x=> jb.val(x)),
+				subscribe(selected=> {
+					cmp.setSelected(selected);
+					selectedRef && jb.writeValue(selectedRef, selected, ctx);
+					onSelection(cmp.ctx.setData(selected));
+			}))
 
-		if (ctx.params.onRightClick.profile)
-			cmp.base.oncontextmenu = (e=> {
-				jb.ui.wrapWithLauchingElement(ctx.params.onRightClick,
-					ctx.setData(tree.elemToPath(e.target)), e.target)();
-				return false;
-			});
+			jb.subscribe(cmp.onclick, () => cmp.regainFocus && cmp.regainFocus())
 
-		  // first auto selection selection
-		  var first_selected = jb.val(selectedRef);
-		  if (!first_selected && ctx.params.autoSelectFirst) {
-			  var first = jb.ui.find(tree.el.parentNode,'.treenode')[0];
-			  first_selected = tree.elemToPath(first);
-		  }
-		  if (first_selected)
-  			jb.delay(1).then(() =>
-  				tree.selectionEmitter.next(first_selected))
-  		},
-  	})
+			if (onRightClick.profile)
+				cmp.base.oncontextmenu = (e=> {
+					jb.ui.wrapWithLauchingElement(onRightClick,
+						ctx.setData(cmp.elemToPath(e.target)), e.target)();
+					return false;
+				});
+
+			// first auto selection selection
+			var first_selected = jb.val(selectedRef);
+			if (!first_selected && autoSelectFirst) {
+				var first = jb.ui.find(cmp.base.parentNode,'.treenode')[0];
+				first_selected = cmp.elemToPath(first);
+			}
+			if (first_selected)
+				jb.delay(1).then(() => cmp.selectionEmitter.next(first_selected))
+  	   }
+      )
+  )
 })
 
-jb.component('tree.keyboard-selection', { /* tree.keyboardSelection */
+jb.component('tree.keyboardSelection', {
   type: 'feature',
   params: [
     {id: 'onKeyboardSelection', type: 'action', dynamic: true},
@@ -191,72 +248,69 @@ jb.component('tree.keyboard-selection', { /* tree.keyboardSelection */
   ],
   impl: context => ({
 			onkeydown: true,
+			templateModifier: vdom => {
+				vdom.attributes = vdom.attributes || {};
+				vdom.attributes.tabIndex = -1
+			},
 			afterViewInit: cmp=> {
-				var tree = cmp.tree;
-				cmp.base.setAttribute('tabIndex','0');
+				const {pipe,map,filter,subscribe} = jb.callbag
+				const keyDownNoAlts = pipe(cmp.onkeydown, filter(e=> !e.ctrlKey && !e.altKey))
 
-				var keyDownNoAlts = cmp.onkeydown.filter(e=>
-					!e.ctrlKey && !e.altKey);
-
-				tree.regainFocus = cmp.getKeyboardFocus = cmp.getKeyboardFocus || (_ => {
+				context.vars.$tree.regainFocus = cmp.regainFocus = cmp.getKeyboardFocus = cmp.getKeyboardFocus || (_ => {
 					jb.ui.focus(cmp.base,'tree.keyboard-selection regain focus',context);
 					return false;
-				});
+				})
 
 				if (context.params.autoFocus)
 					jb.ui.focus(cmp.base,'tree.keyboard-selection init autofocus',context);
 
-				keyDownNoAlts
-					.filter(e=> e.keyCode == 13)
-						.subscribe(e =>
-							runActionInTreeContext(context.params.onEnter))
+				pipe(keyDownNoAlts, filter(e=> e.keyCode == 13), subscribe(e =>
+					runActionInTreeContext(context.params.onEnter)))
 
-				keyDownNoAlts.filter(e=> e.keyCode == 38 || e.keyCode == 40)
-					.map(event => {
-						var diff = event.keyCode == 40 ? 1 : -1;
-						var nodes = jb.ui.findIncludeSelf(tree.el,'.treenode');
-						var selected = jb.ui.findIncludeSelf(tree.el,'.treenode.selected')[0];
-						return tree.elemToPath(nodes[nodes.indexOf(selected) + diff]) || tree.selected;
-					}).subscribe(x=>
-						tree.selectionEmitter.next(x))
+				pipe(keyDownNoAlts, filter(e=> e.keyCode == 38 || e.keyCode == 40),
+					map(event => {
+						const diff = event.keyCode == 40 ? 1 : -1;
+						const nodes = jb.ui.findIncludeSelf(cmp.base,'.treenode');
+						const selectedEl = jb.ui.findIncludeSelf(cmp.base,'.treenode.selected')[0];
+						return cmp.elemToPath(nodes[nodes.indexOf(selectedEl) + diff]) || cmp.getSelected();
+					}), subscribe(x=> cmp.selectionEmitter.next(x)))
 				// expand collapse
-				keyDownNoAlts
-					.filter(e=> e.keyCode == 37 || e.keyCode == 39)
-					.subscribe(event => {
-						var isArray = tree.nodeModel.isArray(tree.selected);
-						if (!isArray || (tree.expanded[tree.selected] && event.keyCode == 39))
-							runActionInTreeContext(context.params.onRightClickOfExpanded);
-						if (isArray && tree.selected) {
-							tree.expanded[tree.selected] = (event.keyCode == 39);
-							tree.redraw()
+				pipe(keyDownNoAlts, filter(e=> e.keyCode == 37 || e.keyCode == 39), subscribe(event => {
+						const selected = cmp.getSelected()
+						const isArray = cmp.model.isArray(selected);
+						if (!isArray || (cmp.state.expanded[selected] && event.keyCode == 39))
+							return runActionInTreeContext(context.params.onRightClickOfExpanded);
+						if (isArray && selected) {
+							cmp.state.expanded[selected] = (event.keyCode == 39);
+							cmp.redraw()
 						}
-					});
+				}))
 
 				function runActionInTreeContext(action) {
+					console.log(cmp.getSelected())
 					jb.ui.wrapWithLauchingElement(action,
-						context.setData(tree.selected), jb.ui.findIncludeSelf(tree.el,'.treenode.selected>.treenode-line')[0])()
+						context.setData(cmp.getSelected()), jb.ui.findIncludeSelf(cmp.base,'.treenode.selected>.treenode-line')[0])()
 				}
 				// menu shortcuts - delay in order not to block registration of other features
 		    jb.delay(1).then(_=> cmp.base && (cmp.base.onkeydown = e => {
 					if ((e.ctrlKey || e.altKey || e.keyCode == 46) // also Delete
 					 && (e.keyCode != 17 && e.keyCode != 18)) { // ctrl or alt alone
-						var menu = context.params.applyMenuShortcuts(context.setData(tree.selected));
+						var menu = context.params.applyMenuShortcuts(context.setData(cmp.getSelected()));
 						if (menu && menu.applyShortcut && menu.applyShortcut(e))
-							return false;  // stop propagation
+							return false  // stop propagation
 					}
-					return false;  // stop propagation always
+					return false  // stop propagation always
 				}))
 			}
 		})
 })
 
-jb.component('tree.regain-focus', { /* tree.regainFocus */
+jb.component('tree.regainFocus', {
   type: 'action',
-  impl: ctx =>
-		ctx.vars.$tree && ctx.vars.$tree.regainFocus && ctx.vars.$tree.regainFocus()
+  impl: ctx => ctx.vars.$tree && ctx.vars.$tree.regainFocus && ctx.vars.$tree.regainFocus()
 })
 
-jb.component('tree.redraw', { /* tree.redraw */
+jb.component('tree.redraw', {
   type: 'action',
   params: [
     {id: 'strong', type: 'boolean', as: 'boolean'}
@@ -267,92 +321,99 @@ jb.component('tree.redraw', { /* tree.redraw */
 	}
 })
 
-jb.component('tree.drag-and-drop', { /* tree.dragAndDrop */
-  type: 'feature',
+jb.component('tree.expandPath', {
+  type: 'action',
   params: [
-    
+    {id: 'paths', as: 'array', descrition: 'array of paths to be expanded'}
   ],
+  impl: (ctx,paths) => ctx.vars.cmp && paths.forEach(path => jb.ui.treeExpandPath(ctx.vars.cmp.state.expanded, path))
+})
+
+jb.component('tree.pathOfInteractiveItem', {
+  descrition: 'path of the clicked/dragged item using event.target',
+  type: 'data',
+  impl: ctx => {
+		const {cmp,ev} = ctx.vars
+		return cmp && cmp.elemToPath && ev && ev.target && cmp.elemToPath(ev.target)
+	}
+})
+
+jb.component('tree.dragAndDrop', {
+  type: 'feature',
   impl: ctx => ({
-  		onkeydown: true,
+		onkeydown: true,
+		componentDidUpdate : cmp => cmp.drake && (cmp.drake.containers = jb.ui.find(cmp.base,'.jb-array-node>.treenode-children')),
   		afterViewInit: cmp => {
-  			const tree = cmp.tree;
-        	const drake = tree.drake = dragula([], {
-				      moves: el =>
-					         jb.ui.matches(el,'.jb-array-node>.treenode-children>div')
+        	const drake = cmp.drake = dragula([], {
+				moves: el => jb.ui.matches(el,'.jb-array-node>.treenode-children>div')
 	    	})
           	drake.containers = jb.ui.find(cmp.base,'.jb-array-node>.treenode-children');
           //jb.ui.findIncludeSelf(cmp.base,'.jb-array-node').map(el=>el.children()).filter('.treenode-children').get();
 
 			drake.on('drag', function(el, source) {
-				var path = tree.elemToPath(el.firstElementChild)
-				el.dragged = { path: path, expanded: tree.expanded[path]}
-				delete tree.expanded[path]; // collapse when dragging
+				const path = cmp.elemToPath(el.firstElementChild)
+				el.dragged = { path, expanded: cmp.state.expanded[path]}
+				delete cmp.state.expanded[path]; // collapse when dragging
 			})
 
-			drake.on('drop', (dropElm, target, source,targetSibling) => {
+			drake.on('drop', (dropElm, target, source,_targetSibling) => {
 				if (!dropElm.dragged) return;
 				dropElm.parentNode.removeChild(dropElm);
-				tree.expanded[dropElm.dragged.path] = dropElm.dragged.expanded; // restore expanded state
-				const state = treeStateAsVals(tree);
-				let targetPath = targetSibling ? tree.elemToPath(targetSibling) : addToIndex(tree.elemToPath(target.lastElementChild),1);
+				cmp.state.expanded[dropElm.dragged.path] = dropElm.dragged.expanded; // restore expanded state
+				const state = treeStateAsRefs(cmp);
+				const targetSibling = _targetSibling; // || target.lastElementChild == dropElm && target.previousElementSibling
+				let targetPath = targetSibling ? cmp.elemToPath(targetSibling) : 
+					target.lastElementChild ? addToIndex(cmp.elemToPath(target.lastElementChild),1) : cmp.elemToPath(target);
 				// strange dragule behavior fix
 				const draggedIndex = Number(dropElm.dragged.path.split('~').pop());
-				const targetIndex = Number(targetPath.split('~').pop());
+				const targetIndex = Number(targetPath.split('~').pop()) || 0;
 				if (target === source && targetIndex > draggedIndex)
 					targetPath = addToIndex(targetPath,-1)
-				tree.nodeModel.move(dropElm.dragged.path,targetPath);
-				tree.nodeModel.refHandler && restoreTreeStateFromVals(tree,state);
+				cmp.model.move(dropElm.dragged.path,targetPath,ctx);
+				restoreTreeStateFromRefs(cmp,state);
+				cmp.selectionEmitter.next(targetPath)
 				dropElm.dragged = null;
-				tree.redraw(true);
+				cmp.redraw(true);
 		    })
 
-	        // ctrl up and down
-    		cmp.onkeydown.filter(e=>
-    				e.ctrlKey && (e.keyCode == 38 || e.keyCode == 40))
-    				.subscribe(e=> {
-      					const selectedIndex = Number(tree.selected.split('~').pop());
-      					if (isNaN(selectedIndex)) return;
-      					const no_of_siblings = Array.from(cmp.base.querySelector('.treenode.selected').parentNode.children).length;
-						const diff = e.keyCode == 40 ? 1 : -1;
-      					let target = (selectedIndex + diff+ no_of_siblings) % no_of_siblings;
-						const state = treeStateAsVals(tree);
-      					tree.nodeModel.move(tree.selected, tree.selected.split('~').slice(0,-1).concat([target]).join('~'))
-						  
-						tree.nodeModel.refHandler && restoreTreeStateFromVals(tree,state);
-      			})
-      		},
-      		componentWillUpdate: function(cmp) {
-      			const tree = cmp.tree;
-    		  	if (tree.drake)
-    			     tree.drake.containers = jb.ui.find(cmp.base,'.jb-array-node>.treenode-children');
-    				       //$(cmp.base).findIncludeSelf('.jb-array-node').children().filter('.treenode-children').get();
-      		}
+			// ctrl up and down
+			const {pipe,filter,subscribe} = jb.callbag
+    		pipe(cmp.onkeydown, filter(e=>e.ctrlKey && (e.keyCode == 38 || e.keyCode == 40)), subscribe(e=> {
+				const selected = cmp.getSelected()
+				const selectedIndex = Number(selected.split('~').pop());
+				if (isNaN(selectedIndex)) return;
+				const no_of_siblings = Array.from(cmp.base.querySelector('.treenode.selected').parentNode.children).length;
+				const diff = e.keyCode == 40 ? 1 : -1;
+				const target = (selectedIndex + diff+ no_of_siblings) % no_of_siblings;
+				//const state = treeStateAsRefs(tree);
+				const targetPath = selected.split('~').slice(0,-1).concat([target]).join('~')
+				cmp.model.move(selected, targetPath,ctx)
+				cmp.selectionEmitter && cmp.selectionEmitter.next(targetPath)
+				jb.delay(10).then(()=>cmp.regainFocus && cmp.regainFocus())
+				//restoreTreeStateFromRefs(cmp,state);
+			}))
+      	},
   	})
 })
 
-
-treeStateAsVals = tree => ({
-	selected: pathToVal(tree.nodeModel,tree.selected),
-	expanded: jb.entries(tree.expanded).filter(e=>e[1]).map(e=>pathToVal(tree.nodeModel,e[0]))
+treeStateAsRefs = cmp => ({
+	selected: pathToRef(cmp.model,cmp.getSelected()),
+	expanded: jb.entries(cmp.state.expanded).filter(e=>e[1]).map(e=>pathToRef(cmp.model,e[0]))
 })
 
-restoreTreeStateFromVals = (tree,vals) => {
-	tree.selected = valToPath(tree.nodeModel,vals.selected);
-	tree.expanded = {};
-	vals.expanded.forEach(v=>tree.expanded[valToPath(tree.nodeModel,v)] = true)
+restoreTreeStateFromRefs = (cmp,state) => {
+	if (!cmp.model.refHandler) return
+	refToPath(state.selected) && cmp.setSelected(refToPath(state.selected));
+	cmp.state.expanded = {};
+	state.expanded.forEach(ref=>cmp.state.expanded[refToPath(ref)] = true)
 }
 
-pathToVal = (model,path) =>
-	model.refHandler && model.refHandler.val(model.refHandler.refOfPath(path.split('~')))
-
-valToPath = (model,val) => {
-	if (!model.refHandler) return
-	const ref = model.refHandler.asRef(val);
-	return ref ? ref.path().join('~') : ''
-}
+pathToRef = (model,path) => path && model.refHandler && model.refHandler.refOfPath(path.split('~'))
+refToPath = ref => ref && ref.path ? ref.path().join('~') : ''
 
 addToIndex = (path,toAdd) => {
 	if (!path) debugger;
+	if (isNaN(Number(path.slice(-1)))) return path
 	const index = Number(path.slice(-1)) + toAdd;
 	return path.split('~').slice(0,-1).concat([index]).join('~')
 }

@@ -4,14 +4,12 @@ const st = jb.studio
 let probeCounter = 0
 st.Probe = class {
     constructor(ctx, noGaps) {
-        if (ctx.probe)
-            debugger
         this.noGaps = noGaps
 
         this.context = ctx.ctx({})
         this.probe = {}
         this.context.probe = this
-        this.context.profile = st.valOfPath(this.context.path) // recalc latest version of profile
+        this.context.profile = st.valOfPath(this.context.path) || this.context.profile // recalc latest version of profile
         this.circuit = this.context.profile
         this.id = ++probeCounter
     }
@@ -26,7 +24,7 @@ st.Probe = class {
         this.probe[pathToTrace] = this.result
         this.pathToTrace = pathToTrace
         const initial_resources = st.previewjb.resources
-        const initial_comps = st.compsRefHandler.resources()
+        const initial_comps = st.compsRefHandler && st.compsRefHandler.resources()
         if (st.probeDisabled) {
             this.completed = false
             this.remark = 'probe disabled'
@@ -49,8 +47,8 @@ st.Probe = class {
                 jb.log('probe',['completed',pathToTrace, this.result, this.totalTime, this])
                 // make values out of ref
                 this.result.forEach(obj=> { obj.out = jb.val(obj.out) ; obj.in.data = jb.val(obj.in.data)})
-                st.previewjb.watchableValueByRef && st.previewjb.watchableValueByRef.resources(initial_resources)
-                st.compsRefHandler.resources(initial_comps)
+                st.previewjb.watchableValueByRef && st.previewjb.watchableValueByRef.resources(initial_resources,null,{source: 'probe'})
+                initial_comps && st.compsRefHandler.resources(initial_comps,null,{source: 'probe'})
                 return this
             })
     }
@@ -58,11 +56,9 @@ st.Probe = class {
     simpleRun() {
         const st = jb.studio
         return Promise.resolve(this.context.runItself()).then(res=>{
-            if (st.isCompNameOfType(jb.compName(this.circuit),'control')) {
-                const ctrl = jb.ui.h(res.reactComp())
-                st.probeEl = st.probeEl || document.createElement('div')
-                st.probeResEl = jb.ui.render(ctrl, st.probeEl, st.probeResEl)
-                return ({element: st.probeResEl})
+            if (res.renderVdom) {
+                const vdom = res.renderVdom()
+                return ({props: res.renderProps, vdom , cmp: res})
             }
             else if (st.isCompNameOfType(jb.compName(this.circuit),'table-field')) {
                 const item = this.context.vars.$probe_item
@@ -91,14 +87,13 @@ st.Probe = class {
         if (!breakingProp) return
 
         // check if parent ctx returns object with method name of breakprop as in dialog.onOK
-        const parentCtx = this.probe[_path][0].ctx, breakingPath = _path+'~'+breakingProp
+        const parentCtx = this.probe[_path][0].in, breakingPath = _path+'~'+breakingProp
         const obj = this.probe[_path][0].out
-        if (obj[breakingProp] && typeof obj[breakingProp] == 'function')
+        const hasSideEffect = st.previewjb.comps[st.compNameOfPath(breakingPath)] && (st.previewjb.comps[st.compNameOfPath(breakingPath)].type ||'').indexOf('has-side-effects') != -1
+        if (obj && !hasSideEffect && obj[breakingProp] && typeof obj[breakingProp] == 'function')
             return Promise.resolve(obj[breakingProp]())
                 .then(_=>this.handleGaps(_path))
 
-    // use the ctx to run the breaking param if it has no side effects
-        const hasSideEffect = st.previewjb.comps[st.compNameOfPath(breakingPath)] && (st.previewjb.comps[st.compNameOfPath(breakingPath)].type ||'').indexOf('has-side-effects') != -1
         if (!hasSideEffect)
             return Promise.resolve(parentCtx.runInner(parentCtx.profile[breakingProp],st.paramDef(breakingPath),breakingProp))
                 .then(_=>this.handleGaps(_path))
@@ -109,91 +104,61 @@ st.Probe = class {
     }
 
     // called from jb_run
-    record(context,parentParam) {
+    record(ctx,out) {
         if (this.id < probeCounter) {
             this.stopped = true
             return
         }
         const now = new Date().getTime()
-        if (!this.outOfTime && now - this.startTime > this.maxTime && !context.vars.testID) {
-            jb.log('probe',['out of time',context.path, context,this,now])
+        if (!this.outOfTime && now - this.startTime > this.maxTime && !ctx.vars.testID) {
+            jb.log('probe',['out of time',ctx.path, ctx,this,now])
             this.outOfTime = true
             //throw 'out of time';
         }
-        const path = context.path
-        const input = context.ctx({probe: null})
-        const out = input.runItself(parentParam,{noprobe: true})
-
+        const path = ctx.path
         if (!this.probe[path]) {
             this.probe[path] = []
             this.probe[path].visits = 0
         }
         this.probe[path].visits++
-        let found = null
-        this.probe[path].forEach(x=>{
-            found = jb.compareArrays(x.in.data,input.data) ? x : found
-        })
+        const found = this.probe[path].find(x=>jb.compareArrays(x.in.data,ctx.data))
         if (found)
             found.counter++
-        else {
-            const rec = {in: input, out: out, counter: 0, ctx: context}
-            this.probe[path].push(rec)
-        }
+        else
+            this.probe[path].push({in: ctx, out, counter: 0})
+
         return out
     }
 }
 
-const probeEmitter = new jb.rx.Subject()
-
-jb.component('studio.probe', { /* studio.probe */ 
+jb.component('studio.probe', {
   type: 'data',
   params: [
     {id: 'path', as: 'string', dynamic: true}
   ],
-  impl: (ctx,path) => {
-        const _jb = st.previewjb
-        /* Finding the best circuit
-    1. direct selection
-    2. closest in preview
-    3. the page shown in studio
-*/
-        let circuitCtx = ctx.exp('%$pickSelection/ctx%')
-        // if (circuitCtx && circuitCtx.path.indexOf('~fields~') != -1) {// fields are not good circuit. go up to the table
-        //     const rowElem = ctx.vars.pickSelection.elem && ctx.vars.pickSelection.elem.closest('.jb-item')
-        //     const rowCtx = rowElem && _jb.ctxDictionary[rowElem.getAttribute('jb-ctx')]
-        //     const item = rowCtx && rowCtx.data
-        //     if (item) {
-        //         circuitCtx = circuitCtx.setVars({ $probe_item: item, $probe_index: Array.from(rowElem.parentElement.children).indexOf(rowElem) })
-        //         st.highlight([rowElem])
-        //     } else {
-        //         circuitCtx = null
-        //     }
-        // }
-        if (circuitCtx)
-            jb.studio.highlightCtx(circuitCtx)
+  impl: (ctx,pathF) => {
+        const _jb = st.previewjb, path = pathF()
+        if (!path) return
+        let circuitCtx = null
+        if (jb.path(_jb.comps,[path.split('~')[0],'testData']))
+            circuitCtx = st.closestTestCtx(path)
+        if (!circuitCtx)
+            circuitCtx = _jb.ctxDictionary[ctx.exp('%$studio/pickSelectionCtxId%')]
         if (!circuitCtx) {
-            const circuitInPreview = st.closestCtxInPreview(path())
-                if (circuitInPreview.ctx) {
-                st.highlight([circuitInPreview.elem])
-                circuitCtx = circuitInPreview.ctx
-            }
+            const circuitInPreview = st.closestCtxInPreview(path)
+            circuitCtx = circuitInPreview && circuitInPreview.ctx
         }
+        if (!circuitCtx)
+            circuitCtx = st.closestCtxOfLastRun(path)
+        if (!circuitCtx)
+            circuitCtx = st.closestTestCtx(path)
         if (!circuitCtx) {
-            const circuit = jb.tostring(ctx.exp('%$circuit%','string') || ctx.exp('%$studio/project%.%$studio/page%'))
+            const circuit = jb.tostring(ctx.exp('%$circuit%') || ctx.exp('%$studio/project%') && ctx.run(studio.currentPagePath()))
             circuitCtx = new _jb.jbCtx(new _jb.jbCtx(),{ profile: {$: circuit}, comp: circuit, path: '', data: null} )
         }
-        return new (_jb.studio.Probe || st.Probe)(circuitCtx).runCircuit(path())
-
-        // const req = {path: path(), circuitCtx: circuitCtx };
-        // jb.delay(1).then(_=>probeEmitter.next(req));
-        // const probeQueue = probeEmitter.buffer(probeEmitter.debounceTime(500))
-        //     .map(x=>x && x[0]).filter(x=>x)
-        //     .flatMap(req=>
-        //       new (_jb.studio.Probe || st.Probe)(req.circuitCtx).runCircuit(req.path)
-        //     );
-
-        // return probeQueue.filter(x=>x.id == probeCounter).take(1).toPromise();
-        //      .race(jb.rx.Observable.fromPromise(jb.delay(1000).then(_=>({ result: [] }))))
+        if (circuitCtx)
+            jb.studio.highlightCtx(circuitCtx)
+        return new (_jb.studio.Probe || st.Probe)(circuitCtx).runCircuit(path)
     }
 })
 

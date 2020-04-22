@@ -1,43 +1,58 @@
-jb.component('studio.components-cross-ref', { /* studio.componentsCrossRef */
+jb.component('studio.allComps', {
   type: 'data',
-  impl: ctx => {
-	  var _jb = jb.studio.previewjb;
-	  jb.studio.scriptChange.subscribe(_=>_jb.statistics = null);
-	  if (_jb.statistics) return _jb.statistics;
+  impl: (ctx,cmpId) => Object.keys(jb.studio.previewjb.comps)
+})
 
-	  var refs = {}, comps = _jb.comps;
+jb.component('studio.componentStatistics', {
+  type: 'data',
+  params: [
+    {id: 'cmpId', as: 'string', defaultValue: '%%'}
+  ],
+  impl: (ctx,cmpId) => {
+	  const _jb = jb.studio.previewjb;
+	  jb.subscribe(jb.studio.scriptChange, _=>_jb.statistics = null);
+	  if (!_jb.statistics) {
+      const refs = {}, comps = _jb.comps;
 
-      Object.getOwnPropertyNames(comps).filter(k=>comps[k]).forEach(k=>
-      	refs[k] = {
-      		refs: calcRefs(comps[k].impl).filter((x,index,self)=>self.indexOf(x) === index) ,
-      		by: []
+      Object.keys(comps).filter(k=>comps[k]).forEach(k=>
+        refs[k] = {
+          refs: calcRefs(comps[k].impl).filter((x,index,self)=>self.indexOf(x) === index) ,
+          by: []
       });
-      Object.getOwnPropertyNames(comps).filter(k=>comps[k]).forEach(k=>
-      	refs[k].refs.forEach(cross=>
-      		refs[cross] && refs[cross].by.push(k))
+      Object.keys(comps).filter(k=>comps[k]).forEach(k=>
+        refs[k].refs.forEach(cross=>
+          refs[cross] && refs[cross].by.push(k))
       );
 
-      return _jb.statistics = jb.entries(comps).map(e=>({
-          	id: e[0],
-          	refs: refs[e[0]].refs,
-          	referredBy: refs[e[0]].by,
-          	type: e[1].type || 'data',
-          	implType: typeof e[1].impl,
-          	refCount: refs[e[0]].by.length
-          	//text: jb_prettyPrintComp(comps[k]),
-          	//size: jb_prettyPrintComp(e[0],e[1]).length
-          }));
+      _jb.statistics = refs;
+    }
 
+    const cmp = _jb.comps[cmpId], refs = _jb.statistics
+    if (!cmp) return {}
+    const asStr = '' //jb.prettyPrint(cmp.impl || '',{comps: _jb.comps})
 
-      function calcRefs(profile) {
-      	if (profile == null || typeof profile != 'object') return [];
-      	return Object.getOwnPropertyNames(profile).reduce((res,prop)=>
-      		res.concat(calcRefs(profile[prop])),[_jb.compName(profile)])
-      }
+    return {
+      id: cmpId,
+      file: (cmp[_jb.location] || [])[0],
+      lineInFile: +(cmp[_jb.location] ||[])[1],
+      linesOfCode: (asStr.match(/\n/g)||[]).length,
+      refs: refs[cmpId].refs,
+      referredBy: refs[cmpId].by,
+      type: cmp.type || 'data',
+      implType: typeof cmp.impl,
+      refCount: refs[cmpId].by.length,
+      size: asStr.length
+    }
+
+    function calcRefs(profile) {
+      if (profile == null || typeof profile != 'object') return [];
+      return Object.keys(profile).reduce((res,prop)=>
+        res.concat(calcRefs(profile[prop])),[_jb.compName(profile)])
+    }
 	}
 })
 
-jb.component('studio.references', { /* studio.references */
+jb.component('studio.references', {
   type: 'data',
   params: [
     {id: 'path', as: 'string'}
@@ -62,7 +77,7 @@ jb.component('studio.references', { /* studio.references */
 	}
 })
 
-jb.component('studio.goto-references-options', { /* studio.gotoReferencesOptions */
+jb.component('studio.gotoReferencesOptions', {
   type: 'menu.option',
   params: [
     {id: 'path', as: 'string'},
@@ -91,7 +106,7 @@ jb.component('studio.goto-references-options', { /* studio.gotoReferencesOptions
   )
 })
 
-jb.component('studio.goto-references-button', { /* studio.gotoReferencesButton */
+jb.component('studio.gotoReferencesButton', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
@@ -112,7 +127,7 @@ jb.component('studio.goto-references-button', { /* studio.gotoReferencesButton *
   )
 })
 
-jb.component('studio.goto-references-menu', { /* studio.gotoReferencesMenu */ 
+jb.component('studio.gotoReferencesMenu', {
   type: 'menu.option',
   params: [
     {id: 'path', as: 'string'}
@@ -131,3 +146,61 @@ jb.component('studio.goto-references-menu', { /* studio.gotoReferencesMenu */
   }
 })
 
+jb.component('studio.componentsList', {
+  type: 'control',
+  impl: group({
+    controls: [
+      tableTree({
+        treeModel: tree.jsonReadOnly(studio.cmpsOfProjectByFiles(), ''),
+        leafFields: [
+          text({
+            text: pipeline(studio.componentStatistics('%val%'), '%size%'),
+            title: 'size',
+            features: [field.columnWidth('80')]
+          }),
+          button({
+            title: pipeline(studio.componentStatistics('%val%'), '%refCount%.', split('.')),
+            action: menu.openContextMenu({
+              menu: menu.menu({
+                options: [studio.gotoReferencesOptions('%val%', studio.references('%val%'))]
+              })
+            }),
+            style: button.href(),
+            features: [field.title('refs'), field.columnWidth('40')]
+          }),
+          button({
+            title: 'delete',
+            action: openDialog({
+              vars: [Var('compId', pipeline('%path%', split({separator: '~', part: 'last'})))],
+              style: dialog.dialogOkCancel(),
+              content: group({}),
+              title: 'delete %$compId%',
+              onOK: runActions(
+                studio.delete('%$compId%'),
+                ctx => delete jb.studio.comps[ctx.vars.compId],
+                refreshControlById('component-list')
+              ),
+              features: [css('z-index: 6000 !important'), dialogFeature.nearLauncherPosition({})]
+            }),
+            style: button.x(),
+            features: [
+              field.columnWidth('20'),
+              itemlist.shownOnlyOnItemHover(),
+              field.columnWidth('40')
+            ]
+          })
+        ],
+        chapterHeadline: text({
+          text: pipeline('%path%', split({separator: '~', part: 'last'})),
+          title: ''
+        }),
+        style: tableTree.plain({hideHeaders: false, gapWidth: '130', expColWidth: '10'})
+      })
+    ],
+    features: [
+      css.padding({top: '4', right: '5'}),
+      css.height({height: '400', overflow: 'auto', minMax: ''}),
+      id('component-list')
+    ]
+  })
+})

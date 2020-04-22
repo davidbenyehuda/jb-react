@@ -5,157 +5,167 @@ jb.component('people', { watchableData: [
 ]
 })
 
-jb.component('itemlists.main', { /* itemlists.main */
+jb.component('itemlists.main', {
   type: 'control',
-  impl: itemlist({
-    items: '%$people%',
+  impl: group({
+    layout: layout.vertical(),
     controls: [
-      text({title: 'name', text: '%name%', features: [field.columnWidth('250')]}),
-      text({title: 'age', text: '%age%', features: null})
-    ],
-    style: table.withHeaders()
+      button({title: 'click me', style: button.mdcIcon(icon({icon: 'Yoga', type: 'mdi'}))}),
+      itemlist({
+        title: '',
+        items: '%$people%',
+        controls: [
+          text({text: '%name%', title: 'name', features: field.columnWidth('250')}),
+          text({text: '%age%', title: 'age'})
+        ],
+        style: table.plain(),
+        features: [
+          itemlist.selection({databind: '%$selectedItem%', autoSelectFirst: 'true'}),
+          itemlist.keyboardSelection({})
+        ]
+      })
+    ]
   })
 })
 
 jb.component('itemlists.table', {
-  type: 'control', 
-  impl :{$: 'table', 
-    items: '%$people%', 
+  type: 'control',
+  impl: table({
+    items: '%$people%',
     fields: [
-      {$: 'field', title: 'name', data: '%name%', width: '200' }, 
-      {$: 'field', title: 'age', data: '%age%' }
-    ]
-  }
+      field({title: 'name', data: '%name%', width: '200'}),
+      field({title: 'age', data: '%age%'})
+    ],
+    style: table.mdc()
+  })
 })
 
-jb.component('itemlists.button-field', {
-  type: 'control', 
-  impl :{$: 'group', 
-    title: 'button-field', 
+jb.component('itemlists.largeTable', {
+  type: 'control',
+  impl: group({
+    title: 'large-table',
     controls: [
-      {$: 'table', 
-        items: '%$people%', 
+      table({
+        items: pipeline(range(1, '1000'), {'$': 'object', id: '%%', name: '%%-%%'}),
         fields: [
-          {$: 'field', title: 'name', data: '%name%' }, 
-          {$: 'field.button', 
-            title: 'children', 
-            buttonText: '%children/length%', 
-            action :{$: 'open-dialog', 
-              content :{$: 'group', 
-                controls :{$: 'label', 
-                  title :{
-                    $pipeline: [
-                      '%children/name%', 
-                      {$: 'join', 
-                        separator :{$: 'newline' }, 
-                        items: '%%', 
-                        itemName: 'item', 
-                        itemText: '%%'
-                      }
-                    ]
-                  }, 
-                  style :{$: 'label.card-title' }
-                }
-              }, 
-              title: 'children of %name%', 
-              onOK: {  }
-            }
-          }
-        ], 
-        style :{$: 'table.with-headers' }, 
-        visualSizeLimit: 100, 
-        features: [{$: 'css.width', width: '300' }]
-      }
-    ]
-  }
-})
-
-jb.component('itemlists.large-table', {
-  type: 'control', 
-  impl :{$: 'group', 
-    title: 'large-table', 
-    controls: [
-      {$: 'table', 
-        items :{
-          $pipeline: [
-            {$: 'range', from: 1, to: '1000' }, 
-            {$: 'object', id: '%%', name: '%%-%%' }
-          ]
-        }, 
-        fields: [
-          {$: 'field', title: 'id', data: '%id%', numeric: true }, 
-          {$: 'field', title: 'group', data: ctx => Math.floor(Number(ctx.data.id) /10) }
-        ], 
-        style :{$: 'table.mdl', 
-          classForTable: 'mdl-data-table mdl-js-data-table mdl-data-table--selectable mdl-shadow--2dp', 
-          classForTd: 'mdl-data-table__cell--non-numeric'
-        }, 
+          field({title: 'id', data: '%id%', numeric: true}),
+          field({title: 'group', data: ctx => Math.floor(Number(ctx.data.id) /10)})
+        ],
+        style: table.mdc(),
         visualSizeLimit: '1000'
-      }
+      })
     ]
-  }
+  })
 })
 
-jb.component('itemlists.editable-table', { /* itemlists.editableTable */
+jb.component('itemlists.largeTableWithSearch', {
+  type: 'control',
+  impl: group({
+    title: 'large-table',
+    controls: [
+      itemlistContainer.search({searchIn: search.fuse({})}),
+      table({
+        items: pipeline(
+          range(1, '1000'),
+          {'$': 'object', id: '%%', name: '%%-%%'},
+          itemlistContainer.filter()
+        ),
+        fields: [
+          field({title: 'id', data: '%id%', hoverTitle: '--%id%--', numeric: true}),
+          field({title: 'group', data: ctx => Math.floor(Number(ctx.data.id) /10)})
+        ],
+        style: table.mdc(),
+        visualSizeLimit: '1000',
+        features: [
+          watchRef('%$itemlistCntrData/search_pattern%'),
+          itemlist.selection({
+            onDoubleClick: openDialog({
+              content: group({}),
+              title: '%id%',
+              features: dialogFeature.uniqueDialog('unique')
+            })
+          }),
+          itemlist.keyboardSelection({
+            onEnter: openDialog({
+              content: group({}),
+              title: '%id%',
+              features: [dialogFeature.uniqueDialog('unique')]
+            })
+          })
+        ]
+      })
+    ],
+    features: group.itemlistContainer({})
+  })
+})
+
+jb.component('itemlists.editableTable', {
   type: 'control',
   impl: group({
     controls: [
       itemlist({
         items: '%$people%',
-        style: table.withHeaders(),
         controls: [
-            materialIcon({
-              icon: 'person',
-              style: icon.material(),
-              features: [ itemlist.dragHandle(), field.columnWidth(60) ]
+          control.icon({
+            icon: 'person',
+            features: [itemlist.dragHandle(), field.columnWidth(60)]
           }),
           editableText({
-              title: 'name',
-              databind: '%name%',
-              style: editableText.mdlInputNoFloatingLabel('200')
+            title: 'name',
+            databind: '%name%',
+            style: editableText.mdcNoLabel('200')
           }),
           editableText({
-              title: 'age',
-              databind: '%age%',
-              style: editableText.mdlInputNoFloatingLabel('50')
+            title: 'age',
+            databind: '%age%',
+            style: editableText.mdcNoLabel('50')
           }),
           button({
-              action: removeFromArray({ array: '%$people%', itemToRemove: '%%' }),
-              style: button.x('21'),
-              features: [itemlist.shownOnlyOnItemHover(), field.columnWidth(60)]
+            action: removeFromArray({array: '%$people%', itemToRemove: '%%'}),
+            style: button.x('21'),
+            features: [itemlist.shownOnlyOnItemHover(), field.columnWidth(60)]
           })
         ],
-        style: table.mdl('mdl-data-table mdl-shadow--2dp', 'mdl-data-table__cell--non-numeric'),
+        style: table.mdc(),
         features: [
           watchRef({ref: '%$people%', includeChildren: 'structure', allowSelfRefresh: true}),
-          itemlist.dragAndDrop()
+          itemlist.dragAndDrop(),
+          itemlist.keyboardSelection({}),
+          itemlist.selection({})
         ]
       }),
       button({
-        title: 'add',
+        title: 'add person',
         action: addToArray('%$people%', obj()),
-        style: button.mdlRaised()
+        raised: 'true',
+        features: [
+          css.width('200'),
+          css.margin('10'),
+          feature.icon('person_add_disabled', undefined)
+        ]
       })
-    ],
+    ]
   })
 })
 
 
-jb.component('itemlists.table-with-search', { /* itemlists.tableWithSearch */
+jb.component('itemlists.tableWithSearch', {
   type: 'control',
   impl: group({
     controls: [
       group({
+        layout: layout.vertical(),
         controls: [
           itemlistContainer.search({
             title: 'Search',
-            searchIn: itemlistContainer.searchInAllProperties(),
+            searchIn: search.searchInAllProperties(),
             databind: '%$itemlistCntrData/search_pattern%',
-            style: editableText.mdlSearch()
+            style: editableText.mdcSearch('300')
           }),
           table({
             items: pipeline('%$people%', itemlistContainer.filter()),
             fields: [field({title: 'name', data: '%name%'}), field({title: 'age', data: '%age%'})],
+            style: table.mdc(),
             features: [
               watchRef('%$itemlistCntrData/search_pattern%'),
               itemlist.selection({
@@ -167,218 +177,222 @@ jb.component('itemlists.table-with-search', { /* itemlists.tableWithSearch */
             ]
           })
         ],
+        features: [group.itemlistContainer({}), css.width('300')]
+      })
+    ]
+  })
+})
+
+jb.component('itemlists.tableWithFilters', {
+  type: 'control',
+  impl: group({
+    controls: [
+      group({
+        title: 'container',
+        controls: [
+          group({
+            title: 'filters',
+            layout: layout.horizontal(45),
+            controls: [
+              editableText({
+                title: 'name',
+                databind: '%$itemlistCntrData/name_filter%',
+                style: editableText.mdcInput('100'),
+                features: itemlistContainer.filterField('%name%', filterType.text(true))
+              }),
+              editableText({
+                title: 'age above',
+                databind: '%$itemlistCntrData/age_filter%',
+                style: editableText.mdcInput('100'),
+                features: itemlistContainer.filterField('%age%', filterType.numeric())
+              })
+            ]
+          }),
+          table({
+            items: pipeline('%$people%', itemlistContainer.filter()),
+            fields: [
+              field({title: 'name', data: '%name%', width: '200'}),
+              field({title: 'age', data: '%age%'})
+            ],
+            features: watchRef({ref: '%$itemlistCntrData%', includeChildren: 'yes'})
+          })
+        ],
         features: group.itemlistContainer({})
       })
     ]
   })
 })
 
-jb.component('itemlists.table-with-filters', {
-  type: 'control', 
-  impl :{$: 'group', 
+jb.component('itemlists.masterDetailsWithContainer', {
+  type: 'control',
+  impl: group({
+    layout: layout.horizontal(),
     controls: [
-      {$: 'group', 
-        title: 'container', 
+      itemlist({
+        items: '%$people%',
         controls: [
-          {$: 'group', 
-            title: 'filters', 
-            style :{$: 'layout.horizontal', spacing: 45 }, 
-            controls: [
-              {$: 'editable-text', 
-                title: 'name', 
-                databind: '%$itemlistCntrData/name_filter%', 
-                style :{$: 'editable-text.mdl-input', width: '100' }, 
-                features :{$: 'itemlist-container.filter-field', 
-                  fieldData: '%name%', 
-                  filterType :{$: 'filter-type.text', ignoreCase: true }
-                }
-              }, 
-              {$: 'editable-text', 
-                title: 'age above', 
-                databind: '%$itemlistCntrData/age_filter%', 
-                style :{$: 'editable-text.mdl-input', width: '100' }, 
-                features :{$: 'itemlist-container.filter-field', 
-                  fieldData: '%age%', 
-                  filterType :{$: 'filter-type.numeric' }
-                }
-              }
-            ]
-          }, 
-          {$: 'table', 
-            items :{$: 'pipeline', 
-              items: [
-                '%$people%', 
-                {$: 'itemlist-container.filter' }
-              ]
-            }, 
-            fields: [
-              {$: 'field', title: 'name', data: '%name%', width: '200' }, 
-              {$: 'field', title: 'age', data: '%age%' }
-            ], 
-            features :{$: 'watch-ref', ref: '%$itemlistCntrData%', includeChildren: 'yes' }
-          }
-        ], 
-        features :{$: 'group.itemlist-container' }
-      }
+          text({text: '%name%', title: 'name'})
+        ],
+        style: table.mdc(true),
+        features: [
+          itemlist.selection({autoSelectFirst: 'true'}),
+          itemlist.keyboardSelection({}),
+          css.width('200px')
+        ]
+      }),
+      group({
+        title: 'person',
+        style: propertySheet.titlesAbove({titleStyle: header.mdcHeadline6()}),
+        controls: [
+          text({text: '%name%', title: 'name'}),
+          text({text: '%age%', title: 'age'})
+        ],
+        features: [group.data({data: '%$itemlistCntrData/selected%', watch: true}), group.card({})]
+      })
+    ],
+    features: group.itemlistContainer({})
+  })
+})
+
+jb.component('itemlists.masterDetails', {
+  type: 'control',
+  impl: group({
+    layout: layout.horizontal(),
+    controls: [
+      itemlist({
+        items: '%$people%',
+        controls: [
+          text({text: '%name%', title: 'name'})
+        ],
+        style: table.mdc(true),
+        features: [
+          itemlist.selection({databind: '%$selected%', autoSelectFirst: 'true'}),
+          itemlist.keyboardSelection({})
+        ]
+      }),
+      group({
+        title: 'person',
+        style: propertySheet.titlesLeft({
+          titleStyle: styleWithFeatures(text.span(), css.bold()),
+          titleText: '%%:'
+        }),
+        controls: [
+          text({text: '%name%', title: 'name'}),
+          text({text: '%age%', title: 'age'})
+        ],
+        features: [group.data({data: '%$selected%', watch: true}), group.card({width: '500'})]
+      })
+    ],
+    features: [
+      variable({name: 'selected', value: '%$people/0%', watchable: true}),
+      css.width('500')
     ]
+  })
+})
+
+jb.component('itemlists.withSort', {
+  type: 'control',
+  impl: group({
+    controls: [
+      group({
+        style: propertySheet.titlesLeft({}),
+        controls: [
+          picklist({
+            title: 'sort by:',
+            databind: '%$sortBy%',
+            options: picklist.optionsByComma('age,name'),
+            style: picklist.native(),
+            features: css.width('100')
+          })
+        ]
+      }),
+      itemlist({
+        items: pipeline('%$people%', sort({propertyName: '%$sortBy%', ascending: 'true'})),
+        controls: [
+          text({text: '%name%', title: 'name', features: field.columnWidth('250')}),
+          text({text: '%age%', title: 'age'})
+        ],
+        style: table.plain(),
+        features: watchRef('%$sortBy%')
+      })
+    ]
+  })
+})
+
+jb.component('dataResource.sortBy', {
+  watchableData: 'age'
+})
+
+jb.component('dataResource.selectedItem', {
+  watchableData: {
+
   }
 })
 
+jb.component('dataResource.people', {
+  watchableData: [
+    {
+      name: 'Homer Simpson',
+      age: '42',
+      male: true,
+      children: [{name: 'Bart'}, {name: 'Lisa'}, {name: 'Maggie'}]
+    },
+    {
+      name: 'Marge Simpson',
+      age: '38',
+      male: false,
+      children: [{name: 'Bart'}, {name: 'Lisa'}, {name: 'Maggie'}]
+    },
+    {name: 'Bart Simpson', age: '12'}
+  ]
+})
 
-jb.component('itemlists.phones-chart', {
-  type: 'control', 
-  impl :{$: 'group', 
+jb.component('itemlists.infiniteScroll', {
+  type: 'control',
+  impl: group({
     controls: [
-      {$: 'd3.chart-scatter', 
-        style :{$: 'd3-scatter.plain' }, 
-        pivots: [
-          {$: 'd3.pivot', title: 'performance', value: '%performance%' }, 
-          {$: 'd3.pivot', title: 'size', value: '%size%' }, 
-          {$: 'd3.pivot', 
-            title: 'hits', 
-            value: '%hits%', 
-            scale :{$: 'd3.sqrt-scale' }
-          }, 
-          {$: 'd3.pivot', title: 'make', value: '%make%' }, 
-          {$: 'd3.pivot', title: '$', value: '%price%' }
-        ], 
-        title: 'phones', 
-        frame :{$: 'd3.frame', width: '1200', height: '480', top: 20, right: 20, bottom: '40', left: '80' }, 
-        visualSizeLimit: '3000', 
-        itemTitle: '%title% (%Announced%)', 
-        items: '%$devices%'
-      }
-    ], 
-    features :{$: 'global-var', 
-      name: 'devices', 
-      value :{
-        $pipeline: [
-          '%$global/phones%', 
-          {$: 'slice', $disabled: true, end: '1000' }, 
-          {$: 'sample', 
-            filter :{$: 'starts-with', startsWith: 'Sam', text: '%title%' }, 
-            $disabled: true, 
-            size: 300, 
-            items: '%%'
-          }, 
-          {$: 'assign', 
-            property: [
-              {$: 'prop', 
-                title: 'make', 
-                val :{$: 'split', separator: ' ', text: '%title%', part: 'first' }, 
-                type: 'string'
-              }, 
-              {$: 'prop', 
-                title: 'year', 
-                val :{$: 'match-regex', text: '%Announced%', regex: '20[0-9][0-9]' }, 
-                type: 'number'
-              }, 
-              {$: 'prop', 
-                title: 'price', 
-                val :{
-                  $pipeline: [
-                    {$: 'match-regex', text: '%Price%', regex: '([0-9.]+) EUR' }, 
-                    {$: 'last' }, 
-                    ctx => ctx.data * 1.2
-                  ]
-                }, 
-                type: 'number'
-              }, 
-              {$: 'prop', 
-                title: 'size', 
-                val :{
-                  $pipeline: [
-                    {$: 'match-regex', text: '%Size%', regex: '([0-9.]+) inch' }, 
-                    {$: 'last' }
-                  ]
-                }, 
-                type: 'number'
-              }, 
-              {$: 'prop', 
-                title: 'performance', 
-                val :{
-                  $pipeline: [
-                    {$: 'match-regex', text: '%Performance%', regex: 'Basemark OS II 2.0:\\s*([0-9.]+)' }, 
-                    {$: 'last' }
-                  ]
-                }, 
-                type: 'number'
-              }
-            ], 
-            items: '%%'
-          }, 
-          {$: 'filter', 
-            filter :{ $and: [{$: 'between', from: '4', to: '7', val: '%size%' }, ctx => (ctx.data.year || 0) >= 2016] }
-          }
+      itemlist({
+        title: '',
+        items: range(),
+        controls: [
+          text({text: '%%', title: 'my title'})
+        ],
+        visualSizeLimit: '7',
+        features: [
+          css.height({height: '100', overflow: 'scroll'}),
+          itemlist.infiniteScroll(),
+          css.width('600')
         ]
-      }
-    }
-  }, 
-  features :{$: 'variable', 
-    name: 'devices', 
-    value :{
-      $pipeline: [
-        '%$global/phones/products%', 
-        {$: 'slice', start: '2000', end: '2100' }, 
-        {$: 'assign', 
-          property: [
-            {$: 'prop', 
-              title: 'price', 
-              val :{
-                $pipeline: [
-                  '%Price%', 
-                  {$: 'match-regex', text: '%%', regex: '([0-9]+) EUR' }, 
-                  {$: 'last' }, 
-                  ctx => ctx.data * 1.2
-                ]
-              }, 
-              type: 'number'
-            }, 
-            {$: 'prop', 
-              title: 'year', 
-              val :{
-                $pipeline: [
-                  '%Announced%', 
-                  {$: 'match-regex', text: '%%', regex: '20[0-9][0-9]' }, 
-                  {$: 'last' }
-                ]
-              }, 
-              type: 'number'
-            }, 
-            {$: 'prop', 
-              title: 'size', 
-              val :{
-                $pipeline: [
-                  '%Size%', 
-                  {$: 'match-regex', text: '%%', regex: '([0-9.]+) inch' }, 
-                  {$: 'last' }
-                ]
-              }, 
-              type: 'number'
-            }, 
-            {$: 'prop', 
-              title: 'performance', 
-              val :{
-                $pipeline: [
-                  '%Performance%', 
-                  {$: 'match-regex', text: '%%', regex: 'Basemark OS II 2.0:\\s*([0-9.]+)' }, 
-                  {$: 'last' }
-                ]
-              }, 
-              type: 'number'
-            }, 
-            {$: 'prop', 
-              title: 'make', 
-              val :{$: 'split', separator: ' ', text: '%title%', part: 'first' }, 
-              type: 'string'
-            }
-          ], 
-          items: '%%'
-        }, 
-        {$: 'filter', 
-          filter :{$: 'between', from: '4', to: '7', val: '%size%' }
-        }
-      ]
-    }
-  }
+      }),
+      itemlistContainer.search({
+        title: '',
+        searchIn: '%%',
+        databind: '%$itemlistCntrData/search_pattern%'
+      }),
+      itemlist({
+        title: '',
+        items: pipeline(ctx => jb.frame.MDIcons, keys(), itemlistContainer.filter()),
+        controls: [
+          group({
+            layout: layout.horizontal(),
+            controls: [
+              button({title: 'icon', style: button.mdcIcon(icon({icon: '%%', type: 'mdi'}))}),
+              text({
+                text: pipeline('%%', text.highlight('%%', '%$itemlistCntrData.search_pattern%')),
+                title: 'icon name'
+              })
+            ]
+          })
+        ],
+        visualSizeLimit: '50',
+        features: [
+          watchRef({ref: '%$itemlistCntrData/search_pattern%', strongRefresh: 'true'}),
+          css.height({height: '300', overflow: 'scroll'}),
+          css.width('600'),
+          itemlist.infiniteScroll()
+        ]
+      })
+    ],
+    features: group.itemlistContainer({})
+  })
 })

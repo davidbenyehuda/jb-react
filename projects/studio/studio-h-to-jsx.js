@@ -46,8 +46,8 @@ function h_to_jsx({types: t}) {
 }
 
 jb.studio.initJsxToH = _ => {
-  if (jb.studio._initJsxToH) return;
-  Babel.registerPlugin('h-to-jsx',h_to_jsx);
+  if (jb.studio._initJsxToH || !jb.frame.Babel) return;
+  jb.frame.Babel.registerPlugin('h-to-jsx',h_to_jsx);
   jb.studio._initJsxToH = true;
 }
 
@@ -83,7 +83,7 @@ jb.studio.hToJSX = hFunc => {
   }
 }
 
-jb.component('studio.pretty', { /* studio.pretty */
+jb.component('studio.pretty', {
   type: 'data',
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'}
@@ -91,7 +91,7 @@ jb.component('studio.pretty', { /* studio.pretty */
   impl: (ctx,text) => jb.studio.pretty(text)
 })
 
-jb.component('studio.jsx-to-h', { /* studio.jsxToH */
+jb.component('studio.jsxToH', {
   type: 'data',
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'}
@@ -99,7 +99,7 @@ jb.component('studio.jsx-to-h', { /* studio.jsxToH */
   impl: (ctx,text) => jb.studio.jsxToH(text)
 })
 
-jb.component('studio.h-to-jsx', { /* studio.hToJsx */
+jb.component('studio.hToJsx', {
   type: 'data',
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'}
@@ -108,7 +108,7 @@ jb.component('studio.h-to-jsx', { /* studio.hToJsx */
 })
 
 
-jb.component('studio.template-as-jsx', { /* studio.templateAsJsx */
+jb.component('studio.templateAsJsx', {
   type: 'data',
   params: [
     {id: 'path', as: 'string', dynamic: true}

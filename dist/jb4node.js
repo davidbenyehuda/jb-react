@@ -2,8 +2,12 @@ const frame = typeof self === 'object' ? self : typeof global === 'object' ? glo
 const jb = (function() {
 function jb_run(ctx,parentParam,settings) {
   log('req', [ctx,parentParam,settings])
+  if (ctx.probe && ctx.probe.outOfTime)
+    return
+  if (jb.ctxByPath) jb.ctxByPath[ctx.path] = ctx
   const res = do_jb_run(...arguments);
-  
+  if (ctx.probe && ctx.probe.pathToTrace.indexOf(ctx.path) == 0)
+      ctx.probe.record(ctx,res)
   log('res', [ctx,res,parentParam,settings])
   return res;
 }
@@ -11,12 +15,6 @@ function jb_run(ctx,parentParam,settings) {
 function do_jb_run(ctx,parentParam,settings) {
   try {
     const profile = ctx.profile;
-    if (jb.ctxByPath)
-      jb.ctxByPath[ctx.path] = ctx
-    if (ctx.probe && (!settings || !settings.noprobe)) {
-      if (ctx.probe.pathToTrace.indexOf(ctx.path) == 0)
-        return ctx.probe.record(ctx,parentParam)
-    }
     if (profile == null || (typeof profile == 'object' && profile.$disabled))
       return castToParam(null,parentParam);
 
@@ -56,11 +54,11 @@ function do_jb_run(ctx,parentParam,settings) {
             case 'function': run.ctx.params[paramObj.name] = paramObj.outerFunc(run.ctx) ;  break;
             case 'array': run.ctx.params[paramObj.name] =
                 paramObj.array.map((prof,i) =>
-                  jb_run(new jbCtx(run.ctx,{profile: prof, forcePath: ctx.path + '~' + paramObj.path+ '~' + i, path: ''}), paramObj.param))
+                  jb_run(new jbCtx(run.ctx,{profile: prof, forcePath: paramObj.forcePath || ctx.path + '~' + paramObj.path+ '~' + i, path: ''}), paramObj.param))
                   //run.ctx.runInner(prof, paramObj.param, paramObj.path+'~'+i) )
               ; break;  // maybe we should [].concat and handle nulls
             default: run.ctx.params[paramObj.name] =
-              jb_run(new jbCtx(run.ctx,{profile: paramObj.prof, forcePath: ctx.path + '~' + paramObj.path, path: ''}), paramObj.param);
+              jb_run(new jbCtx(run.ctx,{profile: paramObj.prof, forcePath: paramObj.forcePath || ctx.path + '~' + paramObj.path, path: ''}), paramObj.param);
             //run.ctx.runInner(paramObj.prof, paramObj.param, paramObj.path)
             //jb_run(paramObj.ctx, paramObj.param);
           }
@@ -95,18 +93,14 @@ function do_jb_run(ctx,parentParam,settings) {
   function prepareGCArgs(ctx,preparedParams) {
     const delayed = preparedParams.filter(param => {
       const v = ctx.params[param.name] || {};
-      return (v.then || v.subscribe ) && param.param.as != 'observable'
+      return jb.isDelayed(v) && param.param.as != 'observable'
     });
-    if (delayed.length == 0 || typeof Observable == 'undefined')
-      return [ctx].concat(preparedParams.map(param=>ctx.params[param.name]))
+    if (delayed.length == 0)
+      return [ctx, ...preparedParams.map(param=>ctx.params[param.name])]
 
-    return Observable.from(preparedParams)
-        .concatMap(param=>
-          ctx.params[param.name])
-        .toArray()
-        .map(x=>
-          [ctx].concat(x))
-        .toPromise()
+    const {pipe,concatMap,fromIter,toPromiseArray} = jb.callbag
+    return pipe(fromIter(preparedParams), concatMap(param=> ctx.params[param.name]), toPromiseArray)
+            .then(ar => [ctx, ...ar])
   }
 }
 
@@ -114,20 +108,19 @@ function extendWithVars(ctx,vars) {
   if (!vars) return ctx;
   let res = ctx;
   for(let varname in vars || {})
-    res = new jbCtx(res,{ vars: jb.obj(varname,res.runInner(vars[varname], null,'$vars~'+varname)) });
+    res = new jbCtx(res,{ vars: {[varname]: res.runInner(vars[varname] || '%%', null,'$vars~'+varname)} });
   return res;
 }
 
 function compParams(comp) {
   if (!comp || !comp.params)
     return [];
-  return Array.isArray(comp.params) ? comp.params : entries(comp.params).map(x=>extend(x[1],jb.obj('id',x[0])));
+  return Array.isArray(comp.params) ? comp.params : entries(comp.params).map(x=>Object.assign(x[1],{id: x[0]}));
 }
 
-function prepareParams(comp,profile,ctx) {
+function prepareParams(comp_name,comp,profile,ctx) {
   return compParams(comp)
-    .filter(comp=>
-      !comp.ignore)
+    .filter(param=> !param.ignore)
     .map((param,index) => {
       const p = param.id, sugar = sugarProp(profile);
       let val = profile[p], path =p;
@@ -135,8 +128,11 @@ function prepareParams(comp,profile,ctx) {
         path = sugar[0];
         val = sugar[1];
       }
-      const valOrDefault = (val !== undefined) ? val : (param.defaultValue !== undefined ? param.defaultValue : null);
-//      const valOrDefault = (typeof val != "undefined" && val != null) ? val : (typeof param.defaultValue != 'undefined' ? param.defaultValue : null);
+      const valOrDefault = val !== undefined ? val : (param.defaultValue !== undefined ? param.defaultValue : null)
+      const usingDefault = val === undefined && param.defaultValue !== undefined
+      const forcePath = usingDefault && [comp_name, 'params', compParams(comp).indexOf(param), 'defaultValue'].join('~')
+      if (forcePath) path = ''
+
       const valOrDefaultArray = valOrDefault ? valOrDefault : []; // can remain single, if null treated as empty array
       const arrayParam = param.type && param.type.indexOf('[]') > -1 && Array.isArray(valOrDefaultArray);
 
@@ -145,24 +141,22 @@ function prepareParams(comp,profile,ctx) {
           let func;
           if (arrayParam)
             func = (ctx2,data2) =>
-              jb.flattenArray(valOrDefaultArray.map((prof,i)=>
-                runCtx.extendVars(ctx2,data2).runInner(prof,param,path+'~'+i)))
+              jb.flattenArray(valOrDefaultArray.map((prof,i)=> runCtx.extendVars(ctx2,data2).runInner(prof,param,path+'~'+i)))
           else
-            func = (ctx2,data2) =>
-                  valOrDefault != null ? runCtx.extendVars(ctx2,data2).runInner(valOrDefault,param,path) : valOrDefault;
+            func = (ctx2,data2) => jb_run(new jb.jbCtx(runCtx.extendVars(ctx2,data2),{ profile: valOrDefault, forcePath, path } ),param)
 
           Object.defineProperty(func, "name", { value: p }); // for debug
-          func.profile = (typeof(val) != "undefined") ? val : (typeof(param.defaultValue) != 'undefined') ? param.defaultValue : null;
+          func.profile = val !== undefined ? val : (param.defaultValue !== undefined ? param.defaultValue : null)
           func.srcPath = ctx.path;
           return func;
         }
-        return { name: p, type: 'function', outerFunc: outerFunc, path: path, param: param };
+        return { name: p, type: 'function', outerFunc, path, param, forcePath };
       }
 
       if (arrayParam) // array of profiles
-        return { name: p, type: 'array', array: valOrDefaultArray, param: Object.assign({},param,{type:param.type.split('[')[0],as:null}), path: path };
+        return { name: p, type: 'array', array: valOrDefaultArray, param: Object.assign({},param,{type:param.type.split('[')[0],as:null}), forcePath, path };
       else
-        return { name: p, type: 'run', prof: valOrDefault, param: param, path: path }; // ctx: new jbCtx(ctx,{profile: valOrDefault, path: p}),
+        return { name: p, type: 'run', prof: valOrDefault, param, forcePath, path };
   })
 }
 
@@ -218,10 +212,8 @@ function prepare(ctx,parentParam) {
   if (!comp.impl) { logError('component ' + comp_name + ' has no implementation', ctx); return { type:'null' } }
 
   fixByValue(profile,comp)
-  const resCtx = new jbCtx(ctx,{});
-  resCtx.parentParam = parentParam;
-  resCtx.params = {}; // TODO: try to delete this line
-  const preparedParams = prepareParams(comp,profile,resCtx);
+  const resCtx = Object.assign(new jbCtx(ctx,{}), {parentParam, params: {}})
+  const preparedParams = prepareParams(comp_name,comp,profile,resCtx);
   if (typeof comp.impl === 'function') {
     Object.defineProperty(comp.impl, 'name', { value: comp_name }); // comp_name.replace(/[^a-zA-Z0-9]/g,'_')
     return { type: 'profile', impl: comp.impl, ctx: resCtx, preparedParams: preparedParams }
@@ -238,6 +230,9 @@ function resolveFinishedPromise(val) {
   return val;
 }
 
+function isRefType(jstype) {
+  return jstype === 'ref' || jstype === 'ref[]'
+}
 function calcVar(ctx,varname,jstype) {
   let res;
   if (ctx.componentContext && ctx.componentContext.params[varname] !== undefined)
@@ -247,16 +242,16 @@ function calcVar(ctx,varname,jstype) {
   else if (ctx.vars.scope && ctx.vars.scope[varname] !== undefined)
     res = ctx.vars.scope[varname]
   else if (jb.resources && jb.resources[varname] !== undefined)
-    res = jstype == 'ref' ? jb.mainWatchableHandler.refOfPath([varname]) : jb.resource(varname)
+    res = isRefType(jstype) ? jb.mainWatchableHandler.refOfPath([varname]) : jb.resource(varname)
   else if (jb.consts && jb.consts[varname] !== undefined)
-    res = jstype == 'ref' ? jb.simpleValueByRefHandler.objectProperty(jb.consts,varname) : res = jb.consts[varname];
+    res = isRefType(jstype) ? jb.simpleValueByRefHandler.objectProperty(jb.consts,varname) : res = jb.consts[varname];
 
   return resolveFinishedPromise(res);
 }
 
-function expression(exp, ctx, parentParam) {
+function expression(_exp, ctx, parentParam) {
   const jstype = parentParam && (parentParam.ref ? 'ref' : parentParam.as);
-  exp = '' + exp;
+  let exp = '' + _exp;
   if (jstype == 'boolean') return bool_expression(exp, ctx);
   if (exp.indexOf('$debugger:') == 0) {
     debugger;
@@ -276,18 +271,12 @@ function expression(exp, ctx, parentParam) {
   if (exp.lastIndexOf('{%') == 0 && exp.indexOf('%}') == exp.length-2) // just one exp filling all string
     return expPart(exp.substring(2,exp.length-2));
 
-  exp = exp.replace(/{%(.*?)%}/g, function(match,contents) {
-      return tostring(expPart(contents,{ as: 'string'}));
-  })
-  exp = exp.replace(/{\?(.*?)\?}/g, function(match,contents) {
-      return tostring(conditionalExp(contents));
-  })
+  exp = exp.replace(/{%(.*?)%}/g, (match,contents) => tostring(expPart(contents,{ as: 'string'})))
+  exp = exp.replace(/{\?(.*?)\?}/g, (match,contents) => tostring(conditionalExp(contents)))
   if (exp.match(/^%[^%;{}\s><"']*%$/)) // must be after the {% replacer
     return expPart(exp.substring(1,exp.length-1),parentParam);
 
-  exp = exp.replace(/%([^%;{}\s><"']*)%/g, function(match,contents) {
-      return tostring(expPart(contents,{as: 'string'}));
-  })
+  exp = exp.replace(/%([^%;{}\s><"']*)%/g, (match,contents) => tostring(expPart(contents,{as: 'string'})))
   return exp;
 
   function conditionalExp(exp) {
@@ -308,61 +297,47 @@ function evalExpressionPart(expressionPart,ctx,parentParam) {
   const jstype = parentParam && (parentParam.ref ? 'ref' : parentParam.as);
   // example: %$person.name%.
 
-  const primitiveJsType = ['string','boolean','number'].indexOf(jstype) != -1;
-  // empty primitive expression - perfomance
-  // if (expressionPart == "")
-  //   return ctx.data;
-
-  const parts = expressionPart.split(/[./]/);
+  const parts = expressionPart.split(/[./[]/);
   return parts.reduce((input,subExp,index)=>pipe(input,subExp,index == parts.length-1,index == 0),ctx.data)
 
-  function pipe(input,subExp,last,first,refHandlerArg) {
-      if (subExp == '')
-          return input;
+  function pipe(input,subExp,last,first) {
+    if (subExp == '')
+       return input;
+    if (subExp.match(/]$/))
+      subExp = subExp.slice(0,-1)
 
-      const arrayIndexMatch = subExp.match(/(.*)\[([0-9]+)\]/); // x[y]
-      const refHandler = refHandlerArg || input && jb.refHandler(input) || jb.watchableHandlers.find(handler=> handler.watchable(input)) || jb.simpleValueByRefHandler;
-      if (arrayIndexMatch) {
-        const arr = arrayIndexMatch[1] == "" ? val(input) : val(pipe(val(input),arrayIndexMatch[1],false,first,refHandler));
-        const index = arrayIndexMatch[2];
-        if (!Array.isArray(arr))
-            return jb.logError('expecting array instead of ' + typeof arr, ctx, arr);
-
-        if (last && (jstype == 'ref' || !primitiveJsType))
-           return refHandler.objectProperty(arr,index,ctx);
-        if (typeof arr[index] == 'undefined')
-           arr[index] = last ? null : implicitlyCreateInnerObject(arr,index,refHandler);
-        if (last && jstype)
-           return jstypes[jstype](arr[index]);
-        return arr[index];
-     }
-
-      const functionCallMatch = subExp.match(/=([a-zA-Z]*)\(?([^)]*)\)?/);
-      if (functionCallMatch && jb.functions[functionCallMatch[1]])
+    const refHandler = jb.objHandler(input)
+    const functionCallMatch = subExp.match(/=([a-zA-Z]*)\(?([^)]*)\)?/);
+    if (functionCallMatch && jb.functions[functionCallMatch[1]])
         return tojstype(jb.functions[functionCallMatch[1]](ctx,functionCallMatch[2]),jstype,ctx);
 
-      if (first && subExp.charAt(0) == '$' && subExp.length > 1)
-        return calcVar(ctx,subExp.substr(1),last ? jstype : null)
-      const obj = val(input);
-      if (subExp == 'length' && obj && typeof obj.length != 'undefined')
-        return obj.length;
-      if (Array.isArray(obj))
-        return [].concat.apply([],obj.map(item=>pipe(item,subExp,last,false,refHandler)).filter(x=>x!=null));
+    if (subExp.match(/\(\)$/)) {
+      const func = pipe(input,subExp.slice(0,-2),last,first)
+      return typeof func == 'function' ? func(ctx) : func
+    }
 
-      if (input != null && typeof input == 'object') {
-        if (obj === null || obj === undefined) return;
-        if (typeof obj[subExp] === 'function' && (parentParam.dynamic || obj[subExp].profile))
-            return obj[subExp](ctx);
-        if (jstype == 'ref') {
-          if (last)
-            return refHandler.objectProperty(obj,subExp);
-          if (obj[subExp] === undefined)
-            obj[subExp] = implicitlyCreateInnerObject(obj,subExp,refHandler);
-        }
-        if (last && jstype)
-            return jstypes[jstype](obj[subExp]);
-        return obj[subExp];
+    if (first && subExp.charAt(0) == '$' && subExp.length > 1)
+      return calcVar(ctx,subExp.substr(1),last ? jstype : null)
+    const obj = val(input);
+    if (subExp == 'length' && obj && typeof obj.length != 'undefined')
+      return obj.length;
+    if (Array.isArray(obj) && isNaN(Number(subExp)))
+      return [].concat.apply([],obj.map(item=>pipe(item,subExp,last,false,refHandler)).filter(x=>x!=null));
+
+    if (input != null && typeof input == 'object') {
+      if (obj === null || obj === undefined) return;
+      if (typeof obj[subExp] === 'function' && (parentParam && parentParam.dynamic || obj[subExp].profile))
+          return obj[subExp](ctx);
+      if (isRefType(jstype)) {
+        if (last)
+          return refHandler.objectProperty(obj,subExp,ctx);
+        if (obj[subExp] === undefined)
+          obj[subExp] = implicitlyCreateInnerObject(obj,subExp,refHandler);
       }
+      if (last && jstype)
+          return jstypes[jstype](obj[subExp]);
+      return obj[subExp];
+    }
   }
   function implicitlyCreateInnerObject(parent,prop,refHandler) {
     jb.log('implicitlyCreateInnerObject',[...arguments]);
@@ -403,8 +378,6 @@ function bool_expression(exp, ctx, parentParam) {
   if (op == '==' || op == '!=' || op == '$=' || op == '^=') {
     const p1 = tostring(expression(trim(parts[1]), ctx, {as: 'string'}))
     let p2 = tostring(expression(trim(parts[3]), ctx, {as: 'string'}))
-    // const p1 = expression(trim(parts[1]), ctx, {as: 'string'});
-    // const p2 = expression(trim(parts[3]), ctx, {as: 'string'});
     p2 = (p2.match(/^["'](.*)["']/) || ['',p2])[1]; // remove quotes
     if (op == '==') return p1 == p2;
     if (op == '!=') return p1 != p2;
@@ -426,10 +399,7 @@ function bool_expression(exp, ctx, parentParam) {
 }
 
 function castToParam(value,param) {
-  let res = tojstype(value,param ? param.as : null);
-  if (param && param.as == 'ref' && param.whenNotRefferable && !jb.isRef(res))
-    res = tojstype(value,param.whenNotRefferable);
-  return res;
+  return tojstype(value,param ? param.as : null);
 }
 
 function tojstype(value,jstype) {
@@ -446,7 +416,13 @@ const tonumber = value => tojstype(value,'number');
 
 const jstypes = {
     asIs: x => x,
-    object: x => x,
+    object(value) {
+      if (Array.isArray(value))
+        value = value[0];
+      if (value && typeof value === 'object')
+        return val(value);
+      return {}
+    },
     string(value) {
       if (Array.isArray(value)) value = value[0];
       if (value == null) return '';
@@ -470,7 +446,8 @@ const jstypes = {
     },
     boolean(value) {
       if (Array.isArray(value)) value = value[0];
-      return val(value) ? true : false;
+      value = val(value);
+      return value && value != 'false' ? true : false;
     },
     single(value) {
       if (Array.isArray(value))
@@ -478,6 +455,11 @@ const jstypes = {
       return val(value);
     },
     ref(value) {
+      if (Array.isArray(value))
+        value = value[0];
+      return jb.asRef(value);
+    },
+    'ref[]': function(value) {
       return jb.asRef(value);
     },
     value(value) {
@@ -551,8 +533,9 @@ class jbCtx {
   }
   exp(exp,jstype) { return expression(exp, this, {as: jstype}) }
   setVars(vars) { return new jbCtx(this,{vars: vars}) }
+  setVar(name,val) { return name ? new jbCtx(this,{vars: {[name]: val}}) : this }
   setData(data) { return new jbCtx(this,{data: data}) }
-  runInner(profile,parentParam, path) { return jb_run(new jbCtx(this,{profile: profile,path: path}), parentParam) }
+  runInner(profile,parentParam, path) { return jb_run(new jbCtx(this,{profile: profile,path}), parentParam) }
   bool(profile) { return this.run(profile, { as: 'boolean'}) }
   // keeps the ctx vm and not the caller vm - needed in studio probe
   ctx(ctx2) { return new jbCtx(this,ctx2) }
@@ -569,19 +552,25 @@ class jbCtx {
     })
   }
   runItself(parentParam,settings) { return jb_run(this,parentParam,settings) }
+  callStack() {
+    const ctxStack=[]; 
+    for(let innerCtx=this; innerCtx; innerCtx = innerCtx.componentContext) 
+      ctxStack.push(innerCtx)
+    return ctxStack.map(ctx=>ctx.callerPath)
+  }
 }
 
 const logs = {};
 
 const profileOfPath = path => path.reduce((o,p)=>o && o[p], jb.comps) || {}
 
-const log = (logName, record) => frame.wSpy && frame.wSpy.log(logName, record, {
+const log = (logName, record, options) => jb.spy && jb.spy.log(logName, record, { 
   modifier: record => {
     if (record[1] instanceof jbCtx)
       record.splice(1,0,pathSummary(record[1].path))
     if (record[0] instanceof jbCtx)
       record.splice(0,0,pathSummary(record[0].path))
-}});
+} , ...options });
 
 function pathSummary(path) {
   if (!path) return ''
@@ -592,12 +581,12 @@ function pathSummary(path) {
 }
 
 function logError() {
-  frame.console && frame.console.log(...arguments)
+  frame.console && frame.console.log('%c Error: ','color: red', ...arguments)
   log('error',[...arguments])
 }
 
 function logException(e,errorStr,ctx, ...rest) {
-  frame.console && frame.console.log(...arguments)
+  frame.console && frame.console.log('%c Exception: ','color: red', ...arguments)
   log('exception',[e.stack||'',ctx,errorStr && pathSummary(ctx && ctx.path),e, ...rest])
 }
 
@@ -622,18 +611,11 @@ function objFromEntries(entries) {
   entries.forEach(e => res[e[0]] = e[1]);
   return res;
 }
-function extend(obj,obj1,obj2,obj3) {
-  if (!obj) return;
-  obj1 && Object.assign(obj,obj1);
-  obj2 && Object.assign(obj,obj2);
-  obj3 && Object.assign(obj,obj3);
-  return obj;
-}
 
 const simpleValueByRefHandler = {
   val(v) {
-    if (v.$jb_val) return v.$jb_val();
-    return v.$jb_parent ? v.$jb_parent[v.$jb_property] : v;
+    if (v && v.$jb_val) return v.$jb_val();
+    return v && v.$jb_parent ? v.$jb_parent[v.$jb_property] : v;
   },
   writeValue(to,value,srcCtx) {
     jb.log('writeValue',['valueByRefWithjbParent',value,to,srcCtx]);
@@ -650,12 +632,9 @@ const simpleValueByRefHandler = {
   },
   asRef(value) {
     return value
-    // if (value && (value.$jb_parent || value.$jb_val))
-    //     return value;
-    // return { $jb_val: () => value, $jb_path: () => [] }
   },
   isRef(value) {
-    return value && (value.$jb_parent || value.$jb_val);
+    return value && (value.$jb_parent || value.$jb_val || value.$jb_obj)
   },
   objectProperty(obj,prop) {
       if (this.isRef(obj[prop]))
@@ -670,28 +649,24 @@ let types = {}, ui = {}, rx = {}, ctxDictionary = {}, testers = {};
 return {
   run: jb_run,
   jbCtx, expression, bool_expression, profileType, compName, pathSummary, logs, logError, log, logException, tojstype, jstypes, tostring, toarray, toboolean,tosingle,tonumber,
-  types, ui, rx, ctxDictionary, testers, compParams, singleInType, val, entries, objFromEntries, extend, frame, fixByValue,
+  types, ui, rx, ctxDictionary, testers, compParams, singleInType, val, entries, objFromEntries, frame, fixByValue,
   ctxCounter: _ => ctxCounter, simpleValueByRefHandler
 }
 
 })();
 
 Object.assign(jb,{
-  comps: {}, resources: {}, consts: {}, macroDef: Symbol('macroDef'), macroNs: {}, //macros: {},
-  studio: { previewjb: jb },
-  knownNSAndCompCases: ['field'],
-  macroName: id =>
-    id.replace(/[_-]([a-zA-Z])/g,(_,letter) => letter.toUpperCase()),
-  ns: nsId =>
-    jb.registerMacro(nsId+'.$dummyComp',{})
-  ,
-  removeDataResourcePrefix: id =>
-    id.indexOf('data-resource.') == 0 ? id.slice('data-resource.'.length) : id,
-  addDataResourcePrefix: id =>
-    id.indexOf('data-resource.') == 0 ? id : 'data-resource.' + id,
-  component: (id,comp) => {
+  comps: {}, resources: {}, consts: {}, location: Symbol.for('location'), studio: { previewjb: jb },
+  removeDataResourcePrefix: id => id.indexOf('dataResource.') == 0 ? id.slice('dataResource.'.length) : id,
+  addDataResourcePrefix: id => id.indexOf('dataResource.') == 0 ? id : 'dataResource.' + id,
+
+  component: (_id,comp) => {
+    const id = jb.macroName(_id)
     try {
-      jb.traceComponentFile && jb.traceComponentFile(comp)
+      const errStack = new Error().stack.split(/\r|\n/)
+      const line = errStack.filter(x=>x && !x.match(/<anonymous>|about:blank|tgp-pretty.js|internal\/modules\/cjs|at jb_initWidget|at Object.ui.renderWidget/)).pop()
+      comp[jb.location] = (line.match(/\\?([^:]+):([^:]+):[^:]+$/) || ['','','','']).slice(1,3)
+    
       if (comp.watchableData !== undefined) {
         jb.comps[jb.addDataResourcePrefix(id)] = comp
         return jb.resource(jb.removeDataResourcePrefix(id),comp.watchableData)
@@ -700,7 +675,9 @@ Object.assign(jb,{
         jb.comps[jb.addDataResourcePrefix(id)] = comp
         return jb.const(jb.removeDataResourcePrefix(id),comp.passiveData)
       }
-    } catch(e) {}
+    } catch(e) {
+      console.log(e)
+    }
 
     jb.comps[id] = comp;
 
@@ -710,7 +687,7 @@ Object.assign(jb,{
         p.type = 'boolean'
     })
 
-    jb.registerMacro(id, comp)
+    jb.registerMacro && jb.registerMacro(id, comp)
   },
   type: (id,val) => jb.types[id] = val || {},
   resource: (id,val) => { 
@@ -721,87 +698,6 @@ Object.assign(jb,{
   },
   const: (id,val) => typeof val == 'undefined' ? jb.consts[id] : (jb.consts[id] = val || {}),
   functionDef: (id,val) => jb.functions[id] = val,
-  registerMacro: (id, profile) => {
-    const macroId = jb.macroName(id).replace(/\./g,'_')
-    const nameSpace = id.indexOf('.') != -1 && jb.macroName(id.split('.')[0])
-
-    if (checkId(macroId))
-      registerProxy(macroId)
-    if (nameSpace && checkId(nameSpace,true) && !frame[nameSpace]) {
-      registerProxy(nameSpace, true)
-      jb.macroNs[nameSpace] = true
-    }
-
-    function registerProxy(proxyId) {
-      frame[proxyId] = new Proxy(()=>0, { 
-          get: (o,p) => {
-            if (typeof p === 'symbol') return true
-            return frame[proxyId+'_'+p] || genericMacroProcessor(proxyId,p)
-          },
-          apply: function(target, thisArg, allArgs) {
-            const {args,system} = splitSystemArgs(allArgs)
-            return Object.assign(processMacro(args),system)
-          }
-      })
-    }
-  
-    function splitSystemArgs(allArgs) {
-      const args=[], system={} // system props: constVar, remark
-      allArgs.forEach(arg=>{
-        if (arg && typeof arg === 'object' && (jb.comps[arg.$] || {}).isSystem)
-          jb.comps[arg.$].macro(system,arg)
-        else
-          args.push(arg)
-      })
-      if (args.length == 1 && typeof args[0] === 'object') {
-        jb.asArray(args[0].vars).forEach(arg => jb.comps[arg.$].macro(system,arg))
-        args[0].remark && jb.comps.remark.macro(system,args[0])
-      }
-      return {args,system}
-    }
-
-    function checkId(macroId,isNS) {
-      if (frame[macroId] && !frame[macroId][jb.macroDef]) {
-        jb.logError(macroId +' is reserved by system or libs. please use a different name')
-        return false
-      }
-      if (frame[macroId] !== undefined && !isNS && !jb.macroNs[macroId])
-        jb.logError(macroId + ' is defined more than once, using last definition ' + id)
-      if (frame[macroId] !== undefined && !isNS && jb.macroNs[macroId] && jb.knownNSAndCompCases.indexOf[macroId] == -1)
-        jb.logError(macroId + ' is already defined as ns, using last definition ' + id)
-      return true;
-    }
-   
-    function processMacro(args) {
-      if (args.length == 0)
-        return {$: id }
-      const params = profile.params || []
-      const firstParamIsArray = (params[0] && params[0].type||'').indexOf('[]') != -1
-      if (params.length == 1 && firstParamIsArray) // pipeline, or, and, plus
-        return {$: id, [params[0].id]: args }
-      if (!(profile.usageByValue === false) && (params.length < 3 || profile.usageByValue))
-        return {$: id, ...jb.objFromEntries(args.filter((_,i)=>params[i]).map((arg,i)=>[params[i].id,arg])) }
-      if (args.length == 1 && !Array.isArray(args[0]) && typeof args[0] === 'object')
-        return {$: id, ...args[0]}
-      if (args.length == 1 && params.length)
-        return {$: id, [params[0].id]: args[0]}
-      if (args.length == 2 && params.length > 1)
-        return {$: id, [params[0].id]: args[0], [params[1].id]: args[1]}
-      debugger;
-    }
-    const unMacro = macroId => macroId.replace(/([A-Z])/g, (all,s)=>'-'+s.toLowerCase())
-    function genericMacroProcessor(ns,macroId) {
-      return (...allArgs) => {
-        const {args,system} = splitSystemArgs(allArgs)
-        const out = {$: unMacro(ns) +'.'+ unMacro(macroId)}
-        if (args.length == 1 && typeof args[0] == 'object' && !jb.compName(args[0]))
-          Object.assign(out,args[0])
-        else
-          Object.assign(out,{$byValue: args})
-        return Object.assign(out,system)
-      }
-    }
-   },
 // force path - create objects in the path if not exist
   path: (object,path,value) => {
     let cur = object;
@@ -809,11 +705,7 @@ Object.assign(jb,{
     path = jb.asArray(path)
 
     if (typeof value == 'undefined') {  // get
-      for(let i=0;i<path.length;i++) {
-        cur = cur[path[i]];
-        if (cur === null || cur === undefined) return cur;
-      }
-      return cur;
+      return path.reduce((o,k)=>o && o[k], object)
     } else { // set
       for(let i=0;i<path.length;i++)
         if (i == path.length-1)
@@ -823,18 +715,7 @@ Object.assign(jb,{
       return value;
     }
   },
-  ownPropertyNames: obj => {
-    let res = [];
-    for (let i in (obj || {}))
-      if (obj.hasOwnProperty(i))
-        res.push(i);
-    return res;
-  },
-  obj: (k,v,base) => {
-    let ret = base || {};
-    ret[k] = v;
-    return ret;
-  },
+
   compareArrays: (arr1, arr2) => {
     if (arr1 === arr2)
       return true;
@@ -848,8 +729,7 @@ Object.assign(jb,{
     }
     return true;
   },
-  range: (start, count) =>
-    Array.apply(0, Array(count)).map((element, index) => index + start),
+  range: (start, count) => Array.apply(0, Array(count)).map((element, index) => index + start),
 
   flattenArray: items => {
     let out = [];
@@ -861,20 +741,26 @@ Object.assign(jb,{
     })
     return out;
   },
-  synchArray: ar => {
-    const isSynch = ar.filter(v=> v &&  (typeof v.then == 'function' || typeof v.subscribe == 'function')).length == 0;
+  isDelayed: v => {
+    if (!v || v.constructor === {}.constructor) return
+    else if (typeof v === 'object')
+      return Object.prototype.toString.call(v) === "[object Promise]"
+    else if (typeof v === 'function')
+      return jb.callbag.isCallbag(v)
+  },
+  toSynchArray: __ar => {
+    const ar = jb.asArray(__ar)
+    const isSynch = ar.filter(v=> jb.isDelayed(v)).length == 0;
     if (isSynch) return ar;
 
-    const _ar = ar.filter(x=>x).map(v=>
-      (typeof v.then == 'function' || typeof v.subscribe == 'function') ? v : [v]);
-
-    return jb.rx.Observable.from(_ar)
-          .concatMap(x=>x)
-          .flatMap(v =>
-            Array.isArray(v) ? v : [v])
-          .toArray()
-          .toPromise()
+    const {pipe, fromIter, toPromiseArray, concatMap,flatMap} = jb.callbag
+    return pipe(
+          fromIter(ar),
+          concatMap(x=>x),
+          flatMap(v => Array.isArray(v) ? v : [v]),
+          toPromiseArray)
   },
+  subscribe: (source,listener) => jb.callbag.subscribe(listener)(source),
   unique: (ar,f) => {
     f = f || (x=>x);
     let keys = {}, res = [];
@@ -889,18 +775,15 @@ Object.assign(jb,{
   isEmpty: o => Object.keys(o).length === 0,
   isObject: o => o != null && typeof o === 'object',
   asArray: v => v == null ? [] : (Array.isArray(v) ? v : [v]),
-
-  equals: (x,y) =>
-    x == y || jb.val(x) == jb.val(y),
-
-  delay: mSec =>
-    new Promise(r=>{setTimeout(r,mSec)}),
+  filterEmpty: obj => Object.entries(obj).reduce((a,[k,v]) => (v == null ? a : {...a, [k]:v}), {}),
+  equals: (x,y) => x == y || jb.val(x) == jb.val(y),
+  delay: mSec => new Promise(r=>{setTimeout(r,mSec)}),
 
   // valueByRef API
   extraWatchableHandlers: [],
   extraWatchableHandler: (handler,oldHandler) => { 
     jb.extraWatchableHandlers.push(handler)
-    const oldHandlerIndex = oldHandler && jb.extraWatchableHandlers.indexOf(oldHandler)
+    const oldHandlerIndex = jb.extraWatchableHandlers.indexOf(oldHandler)
     if (oldHandlerIndex != -1)
       jb.extraWatchableHandlers.splice(oldHandlerIndex,1)
     jb.watchableHandlers = [jb.mainWatchableHandler, ...jb.extraWatchableHandlers].map(x=>x)
@@ -918,33 +801,126 @@ Object.assign(jb,{
     return f(handler)
   },
  
+  // handler for ref
   refHandler: ref => {
     if (ref && ref.handler) return ref.handler
     if (jb.simpleValueByRefHandler.isRef(ref)) 
       return jb.simpleValueByRefHandler
     return jb.watchableHandlers.find(handler => handler.isRef(ref))
   },
+  // handler for object (including the case of ref)
+  objHandler: obj => obj && jb.refHandler(obj) || jb.watchableHandlers.find(handler=> handler.watchable(obj)) || jb.simpleValueByRefHandler,
   asRef: obj => {
     const watchableHanlder = jb.watchableHandlers.find(handler => handler.watchable(obj) || handler.isRef(obj))
     if (watchableHanlder)
       return watchableHanlder.asRef(obj)
     return jb.simpleValueByRefHandler.asRef(obj)
   },
-  writeValue: (ref,value,srcCtx) => jb.safeRefCall(ref, h=>h.writeValue(ref,value,srcCtx)),
-  splice: (ref,args,srcCtx) => jb.safeRefCall(ref, h=>h.splice(ref,args,srcCtx)),
-  move: (ref,toRef,srcCtx) => jb.safeRefCall(ref, h=>h.move(ref,toRef,srcCtx)),
-  push: (ref,toAdd,srcCtx) => jb.safeRefCall(ref, h=>h.push(ref,toAdd,srcCtx)),
+  writeValue: (ref,value,srcCtx) => !srcCtx.probe && jb.safeRefCall(ref, h=>h.writeValue(ref,value,srcCtx)),
+  objectProperty: (obj,prop,srcCtx) => jb.objHandler(obj).objectProperty(obj,prop,srcCtx),
+  splice: (ref,args,srcCtx) => !srcCtx.probe && jb.safeRefCall(ref, h=>h.splice(ref,args,srcCtx)),
+  move: (ref,toRef,srcCtx) => !srcCtx.probe && jb.safeRefCall(ref, h=>h.move(ref,toRef,srcCtx)),
+  push: (ref,toAdd,srcCtx) => !srcCtx.probe && jb.safeRefCall(ref, h=>h.push(ref,toAdd,srcCtx)),
   isRef: ref => jb.refHandler(ref),
-  isWatchable: ref => false, // overriden by the watchable-ref.js (if loaded)
+  isWatchable: () => false, // overriden by the watchable-ref.js (if loaded)
   isValid: ref => jb.safeRefCall(ref, h=>h.isValid(ref)),
   refreshRef: ref => jb.safeRefCall(ref, h=>h.refresh(ref)),
+  sessionStorage: (id,val) => val == undefined ? jb.frame.sessionStorage[id] : jb.frame.sessionStorage[id] = val
 })
 if (typeof self != 'undefined')
   self.jb = jb
 if (typeof module != 'undefined')
   module.exports = jb;
 
-jb.component('call', { /* call */
+Object.assign(jb, {
+    macroDef: Symbol('macroDef'), macroNs: {}, 
+    macroName: id => id.replace(/[_-]([a-zA-Z])/g, (_, letter) => letter.toUpperCase()),
+    ns: nsIds => nsIds.split(',').forEach(nsId => jb.registerMacro(nsId + '.$dummyComp', {})),
+    registerMacro: (id, profile) => {
+        const macroId = jb.macroName(id).replace(/\./g, '_')
+        const nameSpace = id.indexOf('.') != -1 && jb.macroName(id.split('.')[0])
+
+        if (checkId(macroId))
+            registerProxy(macroId)
+        if (nameSpace && checkId(nameSpace, true) && !jb.frame[nameSpace]) {
+            registerProxy(nameSpace, true)
+            jb.macroNs[nameSpace] = true
+        }
+
+        function registerProxy(proxyId) {
+            jb.frame[proxyId] = new Proxy(() => 0, {
+                get: (o, p) => {
+                    if (typeof p === 'symbol') return true
+                    return jb.frame[proxyId + '_' + p] || genericMacroProcessor(proxyId, p)
+                },
+                apply: function (target, thisArg, allArgs) {
+                    const { args, system } = splitSystemArgs(allArgs)
+                    return Object.assign(processMacro(args), system)
+                }
+            })
+        }
+
+        function splitSystemArgs(allArgs) {
+            const args = [], system = {} // system props: constVar, remark
+            allArgs.forEach(arg => {
+                if (arg && typeof arg === 'object' && (jb.comps[arg.$] || {}).isSystem)
+                    jb.comps[arg.$].macro(system, arg)
+                else
+                    args.push(arg)
+            })
+            if (args.length == 1 && typeof args[0] === 'object') {
+                jb.asArray(args[0].vars).forEach(arg => jb.comps[arg.$].macro(system, arg))
+                args[0].remark && jb.comps.remark.macro(system, args[0])
+            }
+            return { args, system }
+        }
+
+        function checkId(macroId, isNS) {
+            if (jb.frame[macroId] && !jb.frame[macroId][jb.macroDef]) {
+                jb.logError(macroId + ' is reserved by system or libs. please use a different name')
+                return false
+            }
+            if (jb.frame[macroId] !== undefined && !isNS && !jb.macroNs[macroId] && !macroId.match(/_\$dummyComp$/))
+                jb.logError(macroId.replace(/_/g,'.') + ' is defined more than once, using last definition ' + id)
+            return true;
+        }
+
+        function processMacro(args) {
+            if (args.length == 0)
+                return { $: id }
+            const params = profile.params || []
+            const firstParamIsArray = (params[0] && params[0].type || '').indexOf('[]') != -1
+            if (params.length == 1 && firstParamIsArray) // pipeline, or, and, plus
+                return { $: id, [params[0].id]: args }
+            const macroByProps = args.length == 1 && typeof args[0] === 'object' &&
+                (params[0] && args[0][params[0].id] || params[1] && args[0][params[1].id])
+            if ((profile.macroByValue || params.length < 3) && profile.macroByValue !== false && !macroByProps)
+                return { $: id, ...jb.objFromEntries(args.filter((_, i) => params[i]).map((arg, i) => [params[i].id, arg])) }
+            if (args.length == 1 && !Array.isArray(args[0]) && typeof args[0] === 'object' && !args[0].$)
+                return { $: id, ...args[0] }
+            if (args.length == 1 && params.length)
+                return { $: id, [params[0].id]: args[0] }
+            if (args.length == 2 && params.length > 1)
+                return { $: id, [params[0].id]: args[0], [params[1].id]: args[1] }
+            debugger;
+        }
+        //const unMacro = macroId => macroId.replace(/([A-Z])/g, (all, s) => '-' + s.toLowerCase())
+        function genericMacroProcessor(ns, macroId) {
+            return (...allArgs) => {
+                const { args, system } = splitSystemArgs(allArgs)
+                const out = { $: `${ns}.${macroId}` }
+                if (args.length == 1 && typeof args[0] == 'object' && !jb.compName(args[0]))
+                    Object.assign(out, args[0])
+                else
+                    Object.assign(out, { $byValue: args })
+                return Object.assign(out, system)
+            }
+        }
+    }
+})
+;
+
+jb.component('call', {
   type: 'any',
   params: [
     {id: 'param', as: 'string'}
@@ -963,7 +939,7 @@ jb.component('call', { /* call */
  	}
 })
 
-jb.pipe = function(context,items,ptName) {
+jb.pipe = function(context,ptName) {
 	const start = [jb.toarray(context.data)[0]]; // use only one data item, the first or null
 	if (typeof context.profile.items == 'string')
 		return context.runInner(context.profile.items,null,'items');
@@ -972,12 +948,10 @@ jb.pipe = function(context,items,ptName) {
 		: (context.profile[ptName] ? (ptName + '~') : 'items~');
 
 	if (ptName == '$pipe') // promise pipe
-		return profiles.reduce((deferred,prof,index) => {
-			return deferred.then(data=>
-				jb.synchArray(data))
-			.then(data=>
-				step(prof,index,data))
-		}, Promise.resolve(start))
+		return profiles.reduce((deferred,prof,index) =>
+			deferred.then(data=>jb.toSynchArray(data)).then(data=>step(prof,index,data))
+    , Promise.resolve(start))
+      .then(data=>jb.toSynchArray(data))
 
 	return profiles.reduce((data,prof,index) =>
 		step(prof,index,data), start)
@@ -995,106 +969,82 @@ jb.pipe = function(context,items,ptName) {
 	}
 }
 
-jb.component('pipeline', { /* pipeline */
+jb.component('pipeline', {
   type: 'data',
   description: 'map data arrays one after the other',
   params: [
-    {
-      id: 'items',
-      type: 'data,aggregator[]',
-      ignore: true,
-      mandatory: true,
-      composite: true
-    }
+    {id: 'items', type: 'data,aggregator[]', ignore: true, mandatory: true, composite: true, description: 'click "=" for functions list'}
   ],
-  impl: (ctx,items) => jb.pipe(ctx,items,'$pipeline')
+  impl: ctx => jb.pipe(ctx,'$pipeline')
 })
 
-jb.component('pipe', { /* pipe */
+jb.component('pipe', {
   type: 'data',
   description: 'map asynch data arrays',
   params: [
-    {
-      id: 'items',
-      type: 'data,aggregator[]',
-      ignore: true,
-      mandatory: true,
-      composite: true
-    }
+    {id: 'items', type: 'data,aggregator[]', ignore: true, mandatory: true, composite: true}
   ],
-  impl: (ctx,items) => jb.pipe(ctx,items,'$pipe')
+  impl: ctx => jb.pipe(ctx,'$pipe')
 })
 
-jb.component('data.if', { /* data.if */
+jb.component('data.if', {
   type: 'data',
-  usageByValue: true,
+  macroByValue: true,
   params: [
-    {id: 'condition', type: 'boolean', as: 'boolean', mandatory: true},
+    {id: 'condition', as: 'boolean', mandatory: true, dynamic: true, type: 'boolean'},
     {id: 'then', mandatory: true, dynamic: true},
     {id: 'else', dynamic: true, defaultValue: '%%'}
   ],
-  impl: (ctx,cond,_then,_else) =>
- 		cond ? _then() : _else()
+  impl: (ctx,cond,_then,_else) =>	cond() ? _then() : _else()
 })
 
-jb.component('action.if', { /* action.if */
+jb.component('action.if', {
   type: 'action',
   description: 'if then else',
-  usageByValue: true,
+  macroByValue: true,
   params: [
     {id: 'condition', type: 'boolean', as: 'boolean', mandatory: true},
     {id: 'then', type: 'action', mandatory: true, dynamic: true},
     {id: 'else', type: 'action', dynamic: true}
   ],
-  impl: (ctx,cond,_then,_else) =>
- 		cond ? _then() : _else()
+  impl: (ctx,cond,_then,_else) =>	cond ? _then() : _else()
 })
 
-jb.component('jb-run', { /* jbRun */
+jb.component('jbRun', {
   type: 'action',
   params: [
     {id: 'profile', as: 'string', mandatory: true, description: 'profile name'},
     {id: 'params', as: 'single'}
   ],
-  impl: (ctx,profile,params) =>
- 		ctx.run(Object.assign({$:profile},params || {}))
+  impl: (ctx,profile,params) =>	ctx.run(Object.assign({$:profile},params || {}))
 })
 
-
-jb.component('list', { /* list */
+jb.component('list', {
   type: 'data',
   description: 'also flatten arrays',
   params: [
     {id: 'items', type: 'data[]', as: 'array', composite: true}
   ],
-  impl: function(context,items) {
-		let out = [];
-		items.forEach(item => {
-			if (Array.isArray(item))
-				out = out.concat(item);
-			else
-				out.push(item);
-		});
-		return out;
-	}
+  impl: (ctx,items) => items.flatMap(item=>Array.isArray(item) ? item : [item])
 })
 
-jb.component('firstSucceeding', { /* firstSucceeding */
+jb.component('firstSucceeding', {
   type: 'data',
   params: [
     {id: 'items', type: 'data[]', as: 'array', composite: true}
   ],
-  impl: function(context,items) {
-		for(let i=0;i<items.length;i++)
-			if (jb.val(items[i]))
-				return items[i];
-		// return last one if zero or empty string
-		const last = items.slice(-1)[0];
-		return (last != null) && jb.val(last);
+  impl: (ctx,items) => {
+    for(let i=0;i<items.length;i++) {
+      const val = jb.val(items[i])
+      const isNumber = typeof val === 'number'
+      if (val !== '' && val != null && (!isNumber || (!isNaN(val)) && val !== Infinity && val !== -Infinity))
+        return items[i]
+    }
+		return items.slice(-1)[0];
 	}
 })
 
-jb.component('keys', { /* keys */
+jb.component('keys', {
   type: 'data',
   description: 'Object.keys',
   params: [
@@ -1103,27 +1053,90 @@ jb.component('keys', { /* keys */
   impl: (ctx,obj) => Object.keys(obj && typeof obj === 'object' ? obj : {})
 })
 
-jb.component('properties', { /* properties */
+jb.component('properties', {
+  description: 'object entries as id,val',
   type: 'data',
   params: [
     {id: 'obj', defaultValue: '%%', as: 'single'}
   ],
-  impl: (context,obj) =>
-		jb.ownPropertyNames(obj).filter(p=>p.indexOf('$jb_') != 0).map((id,index) =>
+  impl: (ctx,obj) => Object.keys(obj).filter(p=>p.indexOf('$jb_') != 0).map((id,index) =>
 			({id: id, val: obj[id], index: index}))
 })
 
-jb.component('prefix', { /* prefix */
+jb.component('entries', {
+  description: 'object entries as array 0/1',
+  type: 'data',
+  params: [
+    {id: 'obj', defaultValue: '%%', as: 'single'}
+  ],
+  impl: (ctx,obj) => jb.entries(obj)
+})
+
+jb.component('aggregate', {
+  type: 'aggregator',
+  description: 'calc function on all items, rather then one by one',
+  params: [
+    {id: 'aggregator', type: 'aggregator', mandatory: true, dynamic: true}
+  ],
+  impl: (ctx,aggregator) => aggregator()
+})
+
+jb.ns('math')
+
+jb.component('math.max', {
+  type: 'aggregator',
+  impl: ctx => Math.max.apply(0,ctx.data)
+})
+
+jb.component('math.min', {
+  type: 'aggregator',
+  impl: ctx => Math.max.apply(0,ctx.data)
+})
+
+jb.component('math.sum', {
+  type: 'aggregator',
+  impl: ctx => ctx.data.reduce((acc,item) => +item+acc, 0)
+})
+
+'abs,acos,acosh,asin,asinh,atan,atan2,atanh,cbrt,ceil,clz32,cos,cosh,exp,expm1,floor,fround,hypot,log2,random,round,sign,sin,sinh,sqrt,tan,tanh,trunc'
+  .split(',').forEach(f=>jb.component(`math.${f}`, {
+    impl: ctx => Math[f](ctx.data)
+  })
+)
+
+jb.component('objFromEntries', {
+  description: 'object from entries',
+  type: 'aggregator',
+  params: [
+    {id: 'entries', defaultValue: '%%', as: 'array'}
+  ],
+  impl: (ctx,entries) => jb.objFromEntries(entries)
+})
+
+jb.component('evalExpression', {
+  description: 'evaluate javascript expression',
+  type: 'data',
+  params: [
+    {id: 'expression', as: 'string', defaultValue: '%%', expression: 'e.g. 1+2'}
+  ],
+  impl: (ctx,expression) => {
+    try {
+      return eval('('+expression+')')
+    } catch(e) {}
+  }
+})
+
+jb.component('prefix', {
   type: 'data',
   params: [
     {id: 'separator', as: 'string', mandatory: true},
     {id: 'text', as: 'string', defaultValue: '%%'}
   ],
-  impl: (context,separator,text) =>
+  impl: (ctx,separator,text) =>
 		(text||'').substring(0,text.indexOf(separator))
 })
 
-jb.component('suffix', { /* suffix */
+jb.component('suffix', {
   type: 'data',
   params: [
     {id: 'separator', as: 'string', mandatory: true},
@@ -1133,7 +1146,7 @@ jb.component('suffix', { /* suffix */
 		(text||'').substring(text.lastIndexOf(separator)+separator.length)
 })
 
-jb.component('remove-prefix', { /* removePrefix */
+jb.component('removePrefix', {
   type: 'data',
   params: [
     {id: 'separator', as: 'string', mandatory: true},
@@ -1143,7 +1156,7 @@ jb.component('remove-prefix', { /* removePrefix */
 		text.indexOf(separator) == -1 ? text : text.substring(text.indexOf(separator)+separator.length)
 })
 
-jb.component('remove-suffix', { /* removeSuffix */
+jb.component('removeSuffix', {
   type: 'data',
   params: [
     {id: 'separator', as: 'string', mandatory: true},
@@ -1153,15 +1166,10 @@ jb.component('remove-suffix', { /* removeSuffix */
 		text.lastIndexOf(separator) == -1 ? text : text.substring(0,text.lastIndexOf(separator))
 })
 
-jb.component('remove-suffix-regex', { /* removeSuffixRegex */
+jb.component('removeSuffixRegex', {
   type: 'data',
   params: [
-    {
-      id: 'suffix',
-      as: 'string',
-      mandatory: true,
-      description: 'regular expression. e.g [0-9]*'
-    },
+    {id: 'suffix', as: 'string', mandatory: true, description: 'regular expression. e.g [0-9]*'},
     {id: 'text', as: 'string', defaultValue: '%%'}
   ],
   impl: function(context,suffix,text) {
@@ -1171,17 +1179,31 @@ jb.component('remove-suffix-regex', { /* removeSuffixRegex */
 	}
 })
 
-jb.component('write-value', { /* writeValue */
+jb.component('writeValue', {
   type: 'action',
   params: [
     {id: 'to', as: 'ref', mandatory: true},
     {id: 'value', mandatory: true}
   ],
-  impl: (ctx,to,value) =>
-		jb.writeValue(to,jb.val(value),ctx)
+  impl: (ctx,to,value) => {
+    const val = jb.val(value)
+    if (jb.isDelayed(val))
+      return Promise.resolve().then(val=>jb.writeValue(to,val,ctx))
+    else
+      jb.writeValue(to,val,ctx)
+  }
 })
 
-jb.component('index-of', { /* indexOf */
+jb.component('property', {
+  description: 'navigate/select/path property of object',
+  params: [
+    {id: 'prop', as: 'string', mandatory: true},
+    {id: 'obj', defaultValue: '%%'}
+  ],
+  impl: (ctx,prop,obj) =>	jb.objectProperty(obj,prop,ctx)
+})
+
+jb.component('indexOf', {
   params: [
     {id: 'array', as: 'array', mandatory: true},
     {id: 'item', as: 'single', mandatory: true}
@@ -1189,16 +1211,16 @@ jb.component('index-of', { /* indexOf */
   impl: (ctx,array,item) => array.indexOf(item)
 })
 
-jb.component('add-to-array', { /* addToArray */
+jb.component('addToArray', {
   type: 'action',
   params: [
     {id: 'array', as: 'ref', mandatory: true},
     {id: 'toAdd', as: 'array', mandatory: true}
   ],
-  impl: (ctx,array,toAdd) => jb.push(array,toAdd,ctx)
+  impl: (ctx,array,toAdd) => jb.push(array, JSON.parse(JSON.stringify(toAdd)),ctx)
 })
 
-jb.component('splice', { /* splice */
+jb.component('splice', {
   type: 'action',
   params: [
     {id: 'array', as: 'ref', mandatory: true},
@@ -1206,13 +1228,11 @@ jb.component('splice', { /* splice */
     {id: 'noOfItemsToRemove', as: 'number', defaultValue: 0},
     {id: 'itemsToAdd', as: 'array', defaultValue: []}
   ],
-  impl: (ctx,array,fromIndex,noOfItemsToRemove,itemsToAdd) => {
-		const ar = jb.toarray(array);
+  impl: (ctx,array,fromIndex,noOfItemsToRemove,itemsToAdd) =>
 		jb.splice(array,[[fromIndex,noOfItemsToRemove,...itemsToAdd]],ctx)
-	}
 })
 
-jb.component('remove-from-array', { /* removeFromArray */
+jb.component('removeFromArray', {
   type: 'action',
   params: [
     {id: 'array', as: 'ref', mandatory: true},
@@ -1220,39 +1240,25 @@ jb.component('remove-from-array', { /* removeFromArray */
     {id: 'index', as: 'number', description: 'choose item or index'}
   ],
   impl: (ctx,array,itemToRemove,_index) => {
-		const ar = jb.toarray(array);
-		const index = itemToRemove ? ar.indexOf(itemToRemove) : _index;
-		if (index != -1 && ar.length > index)
+		const index = itemToRemove ? jb.toarray(array).indexOf(itemToRemove) : _index;
+		if (index != -1)
 			jb.splice(array,[[index,1]],ctx)
 	}
 })
 
-jb.component('toggle-boolean-value', { /* toggleBooleanValue */
+jb.component('toggleBooleanValue', {
   type: 'action',
   params: [
     {id: 'of', as: 'ref'}
   ],
-  impl: (ctx,_of) =>
-		jb.writeValue(_of,jb.val(_of) ? false : true)
+  impl: (ctx,_of) => jb.writeValue(_of,jb.val(_of) ? false : true,ctx)
 })
 
-
-jb.component('slice', { /* slice */
+jb.component('slice', {
   type: 'aggregator',
   params: [
-    {
-      id: 'start',
-      as: 'number',
-      defaultValue: 0,
-      description: '0-based index',
-      mandatory: true
-    },
-    {
-      id: 'end',
-      as: 'number',
-      mandatory: true,
-      description: '0-based index of where to end the selection (not including itself)'
-    }
+    {id: 'start', as: 'number', defaultValue: 0, description: '0-based index', mandatory: true},
+    {id: 'end', as: 'number', mandatory: true, description: '0-based index of where to end the selection (not including itself)'}
   ],
   impl: function({data},start,end) {
 		if (!data || !data.slice) return null;
@@ -1260,7 +1266,7 @@ jb.component('slice', { /* slice */
 	}
 })
 
-jb.component('sort', { /* sort */
+jb.component('sort', {
   type: 'aggregator',
   params: [
     {id: 'propertyName', as: 'string', description: 'sort by property inside object'},
@@ -1269,75 +1275,80 @@ jb.component('sort', { /* sort */
   ],
   impl: ({data},prop,lexical,ascending) => {
 		if (!data || ! Array.isArray(data)) return null;
-		let sortFunc;
-		if (lexical)
+    let sortFunc;
+    const firstData = jb.entries(data[0]||{})[0][1]
+		if (lexical || isNaN(firstData))
 			sortFunc = prop ? (x,y) => (x[prop] == y[prop] ? 0 : x[prop] < y[prop] ? -1 : 1) : (x,y) => (x == y ? 0 : x < y ? -1 : 1);
 		else
 			sortFunc = prop ? (x,y) => (x[prop]-y[prop]) : (x,y) => (x-y);
 		if (ascending)
-			return data.slice(0).sort((x,y)=>sortFunc(y,x));
-		return data.slice(0).sort((x,y)=>sortFunc(x,y));
+  		return data.slice(0).sort((x,y)=>sortFunc(x,y));
+		return data.slice(0).sort((x,y)=>sortFunc(y,x));
 	}
 })
 
-jb.component('first', { /* first */
+jb.component('first', {
   type: 'aggregator',
-  impl: ({data}) => data[0]
+  params: [
+    {id: 'items', as: 'array', defaultValue: '%%'}
+  ],
+  impl: (ctx,items) => items[0]
 })
 
-jb.component('last', { /* last */
+jb.component('last', {
   type: 'aggregator',
-  impl: ctx => ctx.data.slice(-1)[0]
+  params: [
+    {id: 'items', as: 'array', defaultValue: '%%'}
+  ],
+  impl: (ctx,items) => items.slice(-1)[0]
 })
 
-jb.component('count', { /* count */
+jb.component('count', {
   type: 'aggregator',
   description: 'length, size of array',
   params: [
     {id: 'items', as: 'array', defaultValue: '%%'}
   ],
-  impl: (ctx,items) =>
-		items.length
+  impl: (ctx,items) => items.length
 })
 
-jb.component('reverse', { /* reverse */
+jb.component('reverse', {
   type: 'aggregator',
   params: [
     {id: 'items', as: 'array', defaultValue: '%%'}
   ],
-  impl: (ctx,items) =>
-		items.reverse()
+  impl: (ctx,items) => items.reverse()
 })
 
-jb.component('sample', { /* sample */
+jb.component('sample', {
   type: 'aggregator',
   params: [
     {id: 'size', as: 'number', defaultValue: 300},
     {id: 'items', as: 'array', defaultValue: '%%'}
   ],
-  impl: (ctx,size,items) =>
-		items.filter((x,i)=>i % (Math.floor(items.length/300) ||1) == 0)
+  impl: (ctx,size,items) =>	items.filter((x,i)=>i % (Math.floor(items.length/size) ||1) == 0)
 })
 
-jb.component('obj', { /* obj */
+jb.component('obj', {
   description: 'build object (dictionary) from props',
   params: [
     {id: 'props', type: 'prop[]', mandatory: true, sugar: true}
   ],
   impl: (ctx,properties) =>
-		Object.assign({}, jb.objFromEntries(properties.map(p=>[p.title, jb.tojstype(p.val(ctx),p.type)])))
+		jb.objFromEntries(properties.map(p=>[p.title, jb.tojstype(p.val(ctx),p.type)]))
 })
 
-jb.component('assign', { /* assign */
-  description: 'extend with calculated properties',
+jb.component('extend', {
+  description: 'assign and extend with calculated properties',
   params: [
     {id: 'props', type: 'prop[]', mandatory: true, defaultValue: []}
   ],
   impl: (ctx,properties) =>
 		Object.assign({}, ctx.data, jb.objFromEntries(properties.map(p=>[p.title, jb.tojstype(p.val(ctx),p.type)])))
 })
+jb.component('assign', jb.comps.extend)
 
-jb.component('assign-with-index', { /* assignWithIndex */
+jb.component('extendWithIndex', {
   type: 'aggregator',
   description: 'extend with calculated properties. %$index% is available ',
   params: [
@@ -1348,34 +1359,50 @@ jb.component('assign-with-index', { /* assignWithIndex */
 			Object.assign({}, item, jb.objFromEntries(properties.map(p=>[p.title, jb.tojstype(p.val(ctx.setData(item).setVars({index:i})),p.type)]))))
 })
 
-jb.component('prop', { /* prop */
+jb.component('prop', {
   type: 'prop',
-  usageByValue: true,
+  macroByValue: true,
   params: [
     {id: 'title', as: 'string', mandatory: true},
-    {id: 'val', dynamic: 'true', type: 'data', mandatory: true, defaultValue: ''},
-    {
-      id: 'type',
-      as: 'string',
-      options: 'string,number,boolean,object,array',
-      defaultValue: 'string'
-    }
+    {id: 'val', dynamic: true, type: 'data', mandatory: true, defaultValue: ''},
+    {id: 'type', as: 'string', options: 'string,number,boolean,object,array', defaultValue: 'string'}
   ],
   impl: ctx => ctx.params
 })
 
-jb.component('Var', { /* Var */
+jb.component('refProp', {
+  type: 'prop',
+  description: 'value by reference allows to change or watch the value',
+  params: [
+    {id: 'title', as: 'string', mandatory: true},
+    {id: 'val', dynamic: true, as: 'ref', mandatory: true}
+  ],
+  impl: ctx => ({ ...ctx.params, type: 'ref' })
+})
+
+
+jb.component('pipeline.var', {
+  type: 'aggregator',
+  params: [
+    {id: 'name', as: 'string', mandatory: true},
+    {id: 'val', mandatory: true, dynamic: true, defaultValue: '%%'}
+  ],
+  impl: ctx => ({ [Symbol.for('Var')]: true, ...ctx.params })
+})
+
+
+jb.component('Var', {
   type: 'var,system',
   isSystem: true,
   params: [
     {id: 'name', as: 'string', mandatory: true},
-    {id: 'val', dynamic: 'true', type: 'data', mandatory: true, defaultValue: ''}
+    {id: 'val', dynamic: true, type: 'data', mandatory: true, defaultValue: '%%'}
   ],
   macro: (result, self) =>
 		Object.assign(result,{ $vars: Object.assign(result.$vars || {}, { [self.name]: self.val }) })
 })
 
-jb.component('remark', { /* remark */
+jb.component('remark', {
   type: 'system',
   isSystem: true,
   params: [
@@ -1385,18 +1412,17 @@ jb.component('remark', { /* remark */
 		Object.assign(result,{ remark: self.remark })
 })
 
-jb.component('If', { /* If */
-  usageByValue: true,
+jb.component('If', {
+  macroByValue: true,
   params: [
-    {id: 'condition', as: 'boolean', type: 'boolean', mandatory: true},
-    {id: 'then'},
-    {id: 'Else'}
+    {id: 'condition', as: 'boolean', mandatory: true, dynamic: true, type: 'boolean'},
+    {id: 'then', dynamic: true},
+    {id: 'Else', dynamic: true}
   ],
-  impl: (ctx,cond,_then,_else) =>
-		cond ? _then : _else
+  impl: (ctx,cond,_then,_else) =>	cond() ? _then() : _else()
 })
 
-jb.component('not', { /* not */
+jb.component('not', {
   type: 'boolean',
   params: [
     {id: 'of', type: 'boolean', as: 'boolean', mandatory: true, composite: true}
@@ -1404,7 +1430,8 @@ jb.component('not', { /* not */
   impl: (context, of) => !of
 })
 
-jb.component('and', { /* and */
+jb.component('and', {
+  description: 'logical and',
   type: 'boolean',
   params: [
     {id: 'items', type: 'boolean[]', ignore: true, mandatory: true, composite: true}
@@ -1420,7 +1447,8 @@ jb.component('and', { /* and */
 	}
 })
 
-jb.component('or', { /* or */
+jb.component('or', {
+  description: 'logical or',
   type: 'boolean',
   params: [
     {id: 'items', type: 'boolean[]', ignore: true, mandatory: true, composite: true}
@@ -1436,18 +1464,18 @@ jb.component('or', { /* or */
 	}
 })
 
-jb.component('between', { /* between */
+jb.component('between', {
+  description: 'checks if number is in range',
   type: 'boolean',
   params: [
     {id: 'from', as: 'number', mandatory: true},
     {id: 'to', as: 'number', mandatory: true},
     {id: 'val', as: 'number', defaultValue: '%%'}
   ],
-  impl: (ctx,from,to,val) =>
-		val >= from && val <= to
+  impl: (ctx,from,to,val) => val >= from && val <= to
 })
 
-jb.component('contains', { /* contains */
+jb.component('contains', {
   type: 'boolean',
   params: [
     {id: 'text', type: 'data[]', as: 'array', mandatory: true},
@@ -1465,7 +1493,7 @@ jb.component('contains', { /* contains */
 	}
 })
 
-jb.component('not-contains', { /* notContains */
+jb.component('notContains', {
   type: 'boolean',
   params: [
     {id: 'text', type: 'data[]', as: 'array', mandatory: true},
@@ -1476,100 +1504,82 @@ jb.component('not-contains', { /* notContains */
   )
 })
 
-jb.component('starts-with', { /* startsWith */
+jb.component('startsWith', {
   description: 'begins with, includes, contains',
   type: 'boolean',
   params: [
     {id: 'startsWith', as: 'string', mandatory: true},
     {id: 'text', defaultValue: '%%', as: 'string'}
   ],
-  impl: (context,startsWith,text) =>
-		text.indexOf(startsWith) == 0
+  impl: (context,startsWith,text) => text.indexOf(startsWith) == 0
 })
 
-jb.component('ends-with', { /* endsWith */
+jb.component('endsWith', {
   description: 'includes, contains',
   type: 'boolean',
   params: [
     {id: 'endsWith', as: 'string', mandatory: true},
     {id: 'text', defaultValue: '%%', as: 'string'}
   ],
-  impl: (context,endsWith,text) =>
-		text.indexOf(endsWith,text.length-endsWith.length) !== -1
+  impl: (context,endsWith,text) => text.indexOf(endsWith,text.length-endsWith.length) !== -1
 })
 
 
-jb.component('filter', { /* filter */
+jb.component('filter', {
   type: 'aggregator',
   params: [
     {id: 'filter', type: 'boolean', as: 'boolean', dynamic: true, mandatory: true}
   ],
-  impl: (context,filter) =>
-		jb.toarray(context.data).filter(item =>
-			filter(context,item))
+  impl: (context,filter) =>	jb.toarray(context.data).filter(item =>	filter(context,item))
 })
 
-jb.component('match-regex', { /* matchRegex */
+jb.component('matchRegex', {
+  description: 'validation with regular expression',
   type: 'boolean',
   params: [
-    {id: 'text', as: 'string', defaultValue: '%%'},
     {id: 'regex', as: 'string', mandatory: true, description: 'e.g: [a-zA-Z]*'},
-    {
-      id: 'fillText',
-      as: 'boolean',
-      mandatory: true,
-      description: 'regex must match all text',
-      type: 'boolean'
-    }
+    {id: 'text', as: 'string', defaultValue: '%%'}
   ],
-  impl: (ctx,text,regex,fillText) =>
-    text.match(new RegExp(fillText ? `^${regex}$` : regex))
+  impl: (ctx,regex,text) => text.match(new RegExp(regex))
 })
 
-jb.component('to-uppercase', { /* toUppercase */
+jb.component('toUpperCase', {
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'}
   ],
-  impl: (ctx,text) =>
-		text.toUpperCase()
+  impl: (ctx,text) =>	text.toUpperCase()
 })
 
-jb.component('to-lowercase', { /* toLowercase */
+jb.component('toLowerCase', {
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'}
   ],
-  impl: (ctx,text) =>
-		text.toLowerCase()
+  impl: (ctx,text) =>	text.toLowerCase()
 })
 
-jb.component('capitalize', { /* capitalize */
+jb.component('capitalize', {
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'}
   ],
-  impl: (ctx,text) =>
-		text.charAt(0).toUpperCase() + text.slice(1)
+  impl: (ctx,text) =>	text.charAt(0).toUpperCase() + text.slice(1)
 })
 
-jb.component('join', { /* join */
+jb.component('join', {
   params: [
     {id: 'separator', as: 'string', defaultValue: ',', mandatory: true},
     {id: 'prefix', as: 'string'},
     {id: 'suffix', as: 'string'},
     {id: 'items', as: 'array', defaultValue: '%%'},
-    {id: 'itemName', as: 'string', defaultValue: 'item'},
     {id: 'itemText', as: 'string', dynamic: true, defaultValue: '%%'}
   ],
   type: 'aggregator',
-  impl: function(context,separator,prefix,suffix,items,itemName,itemText) {
-		const itemToText = (context.profile.itemText) ?
-			item => itemText(new jb.jbCtx(context, {data: item, vars: jb.obj(itemName,item) })) :
-			item => jb.tostring(item);	// performance
-
+  impl: (ctx,separator,prefix,suffix,items,itemText) => {
+		const itemToText = ctx.profile.itemText ?	item => itemText(ctx.setData(item)) :	item => jb.tostring(item);	// performance
 		return prefix + items.map(itemToText).join(separator) + suffix;
 	}
 })
 
-jb.component('unique', { /* unique */
+jb.component('unique', {
   params: [
     {id: 'id', as: 'string', dynamic: true, defaultValue: '%%'},
     {id: 'items', as: 'array', defaultValue: '%%'}
@@ -1581,7 +1591,7 @@ jb.component('unique', { /* unique */
 	}
 })
 
-jb.component('log', { /* log */
+jb.component('log', {
   params: [
     {id: 'obj', as: 'single', defaultValue: '%%'}
   ],
@@ -1597,14 +1607,14 @@ jb.component('log', { /* log */
 	}
 })
 
-jb.component('asIs', { /* asIs */
+jb.component('asIs', {
   params: [
-    {id: '$asIs'}
+    {id: '$asIs', ignore: true}
   ],
   impl: ctx => context.profile.$asIs
 })
 
-jb.component('object', { /* object */
+jb.component('object', {
   impl: function(context) {
 		let result = {};
 		const obj = context.profile.$object || context.profile;
@@ -1618,16 +1628,15 @@ jb.component('object', { /* object */
 	}
 })
 
-jb.component('json.stringify', { /* json.stringify */
+jb.component('json.stringify', {
   params: [
     {id: 'value', defaultValue: '%%'},
     {id: 'space', as: 'string', description: 'use space or tab to make pretty output'}
   ],
-  impl: (context,value,space) =>
-			JSON.stringify(jb.val(value),null,space)
+  impl: (context,value,space) => JSON.stringify(jb.val(value),null,space)
 })
 
-jb.component('json.parse', { /* json.parse */
+jb.component('json.parse', {
   params: [
     {id: 'text', as: 'string'}
   ],
@@ -1640,10 +1649,11 @@ jb.component('json.parse', { /* json.parse */
 	}
 })
 
-jb.component('split', { /* split */
+jb.component('split', {
+  description: 'breaks string using separator',
   type: 'data',
   params: [
-    {id: 'separator', as: 'string', defaultValue: ','},
+    {id: 'separator', as: 'string', defaultValue: ',', description: 'E.g., \",\" or \"<a>\"'},
     {id: 'text', as: 'string', defaultValue: '%%'},
     {id: 'part', options: ',first,second,last,but first,but last'}
   ],
@@ -1660,7 +1670,7 @@ jb.component('split', { /* split */
 	}
 })
 
-jb.component('replace', { /* replace */
+jb.component('replace', {
   type: 'data',
   params: [
     {id: 'find', as: 'string', mandatory: true},
@@ -1677,18 +1687,20 @@ jb.component('replace', { /* replace */
 	}
 })
 
-jb.component('touch', { /* touch */
+jb.component('touch', {
+  description: 'change the value of a watchable variable to acticate its watchers',
   type: 'action',
   params: [
     {id: 'data', as: 'ref'}
   ],
   impl: function(context,data_ref) {
 		const val = Number(jb.val(data_ref));
-		jb.writeValue(data_ref,val ? val + 1 : 1);
+		jb.writeValue(data_ref,val ? val + 1 : 1,ctx);
 	}
 })
 
-jb.component('isNull', { /* isNull */
+jb.component('isNull', {
+  description: 'is null or undefined',
   type: 'boolean',
   params: [
     {id: 'obj', defaultValue: '%%'}
@@ -1696,25 +1708,23 @@ jb.component('isNull', { /* isNull */
   impl: (ctx, obj) => jb.val(obj) == null
 })
 
-jb.component('isEmpty', { /* isEmpty */
+jb.component('isEmpty', {
   type: 'boolean',
   params: [
     {id: 'item', as: 'single', defaultValue: '%%'}
   ],
-  impl: (ctx, item) =>
-		!item || (Array.isArray(item) && item.length == 0)
+  impl: (ctx, item) => !item || (Array.isArray(item) && item.length == 0)
 })
 
-jb.component('notEmpty', { /* notEmpty */
+jb.component('notEmpty', {
   type: 'boolean',
   params: [
     {id: 'item', as: 'single', defaultValue: '%%'}
   ],
-  impl: (ctx, item) =>
-		item && !(Array.isArray(item) && item.length == 0)
+  impl: (ctx, item) => item && !(Array.isArray(item) && item.length == 0)
 })
 
-jb.component('equals', { /* equals */
+jb.component('equals', {
   type: 'boolean',
   params: [
     {id: 'item1', as: 'single', mandatory: true},
@@ -1723,7 +1733,7 @@ jb.component('equals', { /* equals */
   impl: (ctx, item1, item2) => item1 == item2
 })
 
-jb.component('not-equals', { /* notEquals */
+jb.component('notEquals', {
   type: 'boolean',
   params: [
     {id: 'item1', as: 'single', mandatory: true},
@@ -1732,14 +1742,14 @@ jb.component('not-equals', { /* notEquals */
   impl: (ctx, item1, item2) => item1 != item2
 })
 
-jb.component('runActions', { /* runActions */
+jb.component('runActions', {
   type: 'action',
   params: [
     {id: 'actions', type: 'action[]', ignore: true, composite: true, mandatory: true}
   ],
   impl: ctx => {
 		if (!ctx.profile) debugger;
-		const actions = jb.asArray(ctx.profile.actions || ctx.profile['$runActions']);
+		const actions = jb.asArray(ctx.profile.actions || ctx.profile['$runActions']).filter(x=>x);
 		const innerPath =  (ctx.profile.actions && ctx.profile.actions.sugar) ? ''
 			: (ctx.profile['$runActions'] ? '$runActions~' : 'items~');
 		return actions.reduce((def,action,index) =>
@@ -1748,35 +1758,32 @@ jb.component('runActions', { /* runActions */
 	}
 })
 
-jb.component('run-action-on-items', { /* runActionOnItems */
+jb.component('runActionOnItems', {
   type: 'action',
-  usageByValue: true,
+  macroByValue: true,
   params: [
-    {id: 'items', as: 'ref', mandatory: true},
+    {id: 'items', as: 'ref[]', mandatory: true},
     {id: 'action', type: 'action', dynamic: true, mandatory: true},
-    {
-      id: 'notifications',
-      as: 'string',
-      options: 'wait for all actions,no notifications',
-      description: 'notification for watch-ref, defualt behavior is after each action'
-    }
+    {id: 'notifications', as: 'string', options: 'wait for all actions,no notifications', description: 'notification for watch-ref, default behavior is after each action'},
+    {id: 'indexVariable', as: 'string'}
   ],
-  impl: (ctx,items,action,notifications) => {
+  impl: (ctx,items,action,notifications,indexVariable) => {
 		if (notifications && jb.mainWatchableHandler) jb.mainWatchableHandler.startTransaction()
-		return jb.val(items).reduce((def,item) => def.then(_ => action(ctx.setData(item))) ,Promise.resolve())
+		return jb.val(items).reduce((def,item,i) => def.then(_ => action(ctx.setVar(indexVariable,i).setData(item))) ,Promise.resolve())
 			.catch((e) => jb.logException(e,ctx))
 			.then(() => notifications && jb.mainWatchableHandler && jb.mainWatchableHandler.endTransaction(notifications === 'no notifications'));
 	}
 })
 
-jb.component('delay', { /* delay */
+jb.component('delay', {
+  type: 'action,data',
   params: [
-    {id: 'mSec', type: 'number', defaultValue: 1}
+    {id: 'mSec', as: 'number', defaultValue: 1}
   ],
-  impl: (ctx,mSec) => jb.delay(mSec)
+  impl: (ctx,mSec) => jb.delay(mSec).then(() => ctx.data)
 })
 
-jb.component('on-next-timer', { /* onNextTimer */
+jb.component('onNextTimer', {
   description: 'run action after delay',
   type: 'action',
   params: [
@@ -1788,14 +1795,10 @@ jb.component('on-next-timer', { /* onNextTimer */
 			action())
 })
 
-jb.component('extract-prefix', { /* extractPrefix */
+jb.component('extractPrefix', {
   type: 'data',
   params: [
-    {
-      id: 'separator',
-      as: 'string',
-      description: '/w- alphnumberic, /s- whitespace, ^- beginline, $-endline'
-    },
+    {id: 'separator', as: 'string', description: '/w- alphnumberic, /s- whitespace, ^- beginline, $-endline'},
     {id: 'text', as: 'string', defaultValue: '%%'},
     {id: 'regex', type: 'boolean', as: 'boolean', description: 'separator is regex'},
     {id: 'keepSeparator', type: 'boolean', as: 'boolean'}
@@ -1811,14 +1814,10 @@ jb.component('extract-prefix', { /* extractPrefix */
 	}
 })
 
-jb.component('extract-suffix', { /* extractSuffix */
+jb.component('extractSuffix', {
   type: 'data',
   params: [
-    {
-      id: 'separator',
-      as: 'string',
-      description: '/w- alphnumberic, /s- whitespace, ^- beginline, $-endline'
-    },
+    {id: 'separator', as: 'string', description: '/w- alphnumberic, /s- whitespace, ^- beginline, $-endline'},
     {id: 'text', as: 'string', defaultValue: '%%'},
     {id: 'regex', type: 'boolean', as: 'boolean', description: 'separator is regex'},
     {id: 'keepSeparator', type: 'boolean', as: 'boolean'}
@@ -1834,43 +1833,42 @@ jb.component('extract-suffix', { /* extractSuffix */
 	}
 })
 
-jb.component('range', { /* range */
-  description: 'generator, numerator, numbers, index',
+jb.component('range', {
+  description: 'returns a range of number, generator, numerator, numbers, index',
   type: 'data',
   params: [
     {id: 'from', as: 'number', defaultValue: 1},
     {id: 'to', as: 'number', defaultValue: 10}
   ],
-  impl: (ctx,from,to) =>
-    Array.from(Array(to-from+1).keys()).map(x=>x+from)
+  impl: (ctx,from,to) => Array.from(Array(to-from+1).keys()).map(x=>x+from)
 })
 
-jb.component('type-of', { /* typeOf */
+jb.component('typeOf', {
   type: 'data',
   params: [
     {id: 'obj', defaultValue: '%%'}
   ],
   impl: (ctx,_obj) => {
-	  	const obj = jb.val(_obj);
+	  const obj = jb.val(_obj)
 		return Array.isArray(obj) ? 'array' : typeof obj
 	}
 })
 
-jb.component('class-name', { /* className */
+jb.component('className', {
   type: 'data',
   params: [
     {id: 'obj', defaultValue: '%%'}
   ],
   impl: (ctx,_obj) => {
-	  	const obj = jb.val(_obj);
+	  const obj = jb.val(_obj);
 		return obj && obj.constructor && obj.constructor.name
 	}
 })
 
-jb.component('is-of-type', { /* isOfType */
+jb.component('isOfType', {
   type: 'boolean',
   params: [
-    {id: 'type', as: 'string', mandatory: true, description: 'string,boolean'},
+    {id: 'type', as: 'string', mandatory: true, description: 'e.g., string,boolean,array'},
     {id: 'obj', defaultValue: '%%'}
   ],
   impl: (ctx,_type,_obj) => {
@@ -1880,80 +1878,99 @@ jb.component('is-of-type', { /* isOfType */
   }
 })
 
-jb.component('in-group', { /* inGroup */
+jb.component('inGroup', {
+  description: 'is in list, contains in array',
   type: 'boolean',
   params: [
     {id: 'group', as: 'array', mandatory: true},
     {id: 'item', as: 'single', defaultValue: '%%'}
   ],
-  impl: (ctx,group,item) =>
-  	group.indexOf(item) != -1
+  impl: (ctx,group,item) =>	group.indexOf(item) != -1
 })
 
-jb.component('http.get', { /* http.get */
+jb.urlProxy = (typeof window !== 'undefined' && location.href.match(/^[^:]*/)[0] || 'http') + '://jbartdb.appspot.com/jbart_db.js?op=proxy&url='
+jb.cacheKiller = 0
+jb.component('http.get', {
+  type: 'data,action',
   description: 'fetch data from external url',
   params: [
     {id: 'url', as: 'string'},
-    {id: 'json', as: 'boolean', description: 'convert result to json', type: 'boolean'}
+    {id: 'json', as: 'boolean', description: 'convert result to json', type: 'boolean'},
+    {id: 'useProxy', as: 'string', options: ',localhost-server,cloud'}
   ],
-  impl: (ctx,url,_json) => {
+  impl: (ctx,_url,_json,useProxy) => {
 		if (ctx.probe)
-			return jb.http_get_cache[url];
-		const json = _json || url.match(/json$/);
-		return fetch(url)
-			  .then(r =>
-			  		json ? r.json() : r.text())
+			return jb.http_get_cache[_url];
+    const json = _json || _url.match(/json$/);
+    let url = _url
+    if (useProxy == 'localhost-server')
+      url = `/?op=fetch&req=${JSON.stringify({url})}&cacheKiller=${jb.cacheKiller++}`
+    else if (useProxy == 'cloud')
+      url = `//jbart5-server.appspot.com/?op=fetch&req={url:"${url}"}&cacheKiller=${jb.cacheKiller++}`
+
+		return fetch(url, {mode: 'cors'})
+			  .then(r => json ? r.json() : r.text())
 				.then(res=> jb.http_get_cache ? (jb.http_get_cache[url] = res) : res)
-			  .catch(e => jb.logException(e,'',ctx) || [])
+			  .catch(e => jb.logException(e,'http.get',ctx) || [])
 	}
 })
 
-jb.component('http.post', { /* http.post */
-  type: 'action',
+jb.component('http.fetch', {
+  type: 'data,action',
+  description: 'fetch, get or post data from external url',
   params: [
-    {id: 'url', as: 'string'},
-    {id: 'postData', as: 'single'},
-    {
-      id: 'jsonResult',
-      as: 'boolean',
-      description: 'convert result to json',
-      type: 'boolean'
-    }
+    {id: 'url', as: 'string', mandatory: true},
+    {id: 'method', as: 'string', options: 'GET,POST', defaultValue: 'GET'},
+    {id: 'headers', as: 'single', templateValue: obj(prop('Content-Type', 'application/json; charset=UTF-8'))},
+    {id: 'body', as: 'single'},
+    {id: 'json', as: 'boolean', description: 'convert result to json', type: 'boolean'},
+    {id: 'useProxy', as: 'string', options: ',localhost-server,cloud,cloud-test-local'}
   ],
-  impl: (ctx,url,postData,json) => {
-    const headers = new Headers();
-    headers.append("Content-Type", "application/json; charset=UTF-8");
-		return fetch(url,{method: 'POST', headers: headers, body: JSON.stringify(postData) })
-			  .then(r =>
-			  		json ? r.json() : r.text())
-			  .catch(e => jb.logException(e,'',ctx) || [])
+  impl: (ctx,url,method,headers,body,json,proxy) => {
+    const reqObj = {
+      url,
+      method,
+      headers: headers || {},
+      mode: 'cors',
+      body: (typeof body == 'string' || body == null) ? body : JSON.stringify(body)
+    }
+
+    const reqStr = encodeURIComponent(JSON.stringify(reqObj))
+		if (ctx.probe)
+			return jb.http_get_cache[reqStr];
+
+    if (proxy == 'localhost-server')
+      reqObj.url = `/?op=fetch&req=${reqStr}&cacheKiller=${jb.cacheKiller++}`
+    else if (proxy == 'cloud')
+      reqObj.url = `//jbart5-server.appspot.com/fetch?req=${reqStr}&cacheKiller=${jb.cacheKiller++}`
+    else if (proxy == 'cloud-test-local')
+      reqObj.url = `http://localhost:8080/fetch?req=${reqStr}&cacheKiller=${jb.cacheKiller++}`
+
+    return fetch(reqObj.url, proxy ? {mode: 'cors'} : reqObj)
+			  .then(r => json ? r.json() : r.text())
+				.then(res=> jb.http_get_cache ? (jb.http_get_cache[reqStr] = res) : res)
+			  .catch(e => jb.logException(e,'http.fetch',ctx) || [])
 	}
 })
 
-jb.component('isRef', { /* isRef */
+jb.component('isRef', {
   params: [
     {id: 'obj', mandatory: true}
   ],
   impl: (ctx,obj) => jb.isRef(obj)
 })
 
-jb.component('asRef', { /* asRef */
+jb.component('asRef', {
   params: [
     {id: 'obj', mandatory: true}
   ],
   impl: (ctx,obj) => jb.asRef(obj)
 })
 
-jb.component('data.switch', { /* data.switch */
-  usageByValue: false,
+jb.component('data.switch', {
+  macroByValue: false,
   params: [
-    {
-      id: 'cases',
-      type: 'data.switch-case[]',
-      as: 'array',
-      mandatory: true,
-      defaultValue: []
-    },
+    {id: 'cases', type: 'data.switch-case[]', as: 'array', mandatory: true, defaultValue: []},
     {id: 'default', dynamic: true}
   ],
   impl: (ctx,cases,defaultValue) => {
@@ -1964,7 +1981,7 @@ jb.component('data.switch', { /* data.switch */
 	}
 })
 
-jb.component('data.case', { /* data.case */
+jb.component('data.case', {
   type: 'data.switch-case',
   singleInType: true,
   params: [
@@ -1974,16 +1991,10 @@ jb.component('data.case', { /* data.case */
   impl: ctx => ctx.params
 })
 
-jb.component('action.switch', { /* action.switch */
+jb.component('action.switch', {
   type: 'action',
   params: [
-    {
-      id: 'cases',
-      type: 'action.switch-case[]',
-      as: 'array',
-      mandatory: true,
-      defaultValue: []
-    },
+    {id: 'cases', type: 'action.switch-case[]', as: 'array', mandatory: true, defaultValue: []},
     {id: 'defaultAction', type: 'action', dynamic: true}
   ],
   impl: (ctx,cases,defaultAction) => {
@@ -1994,7 +2005,7 @@ jb.component('action.switch', { /* action.switch */
   }
 })
 
-jb.component('action.switch-case', { /* action.switchCase */
+jb.component('action.switchCase', {
   type: 'action.switch-case',
   singleInType: true,
   params: [
@@ -2003,43 +2014,81 @@ jb.component('action.switch-case', { /* action.switchCase */
   ],
   impl: ctx => ctx.params
 })
-;
+
+jb.component('formatDate', {
+  description: 'using toLocaleDateString',
+  params: [
+    {id: 'date', defaultValue: '%%', description: 'Date value'},
+    {id: 'dateStyle', as: 'string', options: 'full,long,medium,short'},
+    {id: 'timeStyle', as: 'string', options: 'full,long,medium,short'},
+    {id: 'weekday', as: 'string', options: 'long,short,narrow'},
+    {id: 'year', as: 'string', options: 'numeric,2-digit'},
+    {id: 'month', as: 'string', options: 'numeric,2-digit,long,short,narrow'},
+    {id: 'day', as: 'string', options: 'numeric,2-digit'},
+    {id: 'hour', as: 'string', options: 'numeric,2-digit'},
+    {id: 'minute', as: 'string', options: 'numeric,2-digit'},
+    {id: 'second', as: 'string', options: 'numeric,2-digit'},
+    {id: 'timeZoneName', as: 'string', options: 'long,short'}
+  ],
+  impl: (ctx,date) => new Date(date).toLocaleDateString(undefined, jb.objFromEntries(jb.entries(ctx.params).filter(e=>e[1])))
+})
+
+jb.exec = (...args) => new jb.jbCtx().run(...args)
+jb.execInStudio = (...args) => jb.studio.studioWindow && new jb.studio.studioWindow.jb.jbCtx().run(...args)
+jb.exp = (...args) => new jb.jbCtx().exp(...args);
 
 (function() {
-'use strict'
 const spySettings = { 
-    moreLogs: 'req,res,focus,apply,check,suggestions,writeValue,render,createReactClass,renderResult,probe,setState,immutable,pathOfObject,refObservable,scriptChange,resLog', 
+	moreLogs: 'req,res,focus,apply,check,suggestions,writeValue,render,createReactClass,renderResult,probe,setState,immutable,pathOfObject,refObservable,scriptChange,resLog,setGridAreaVals,dragableGridItemThumb', 
+	groups: {
+		watchable: 'doOp,writeValue,removeCmpObservable,registerCmpObservable,notifyCmpObservable,notifyObservableElems,notifyObservableElem,scriptChange',
+		react: 'applyDeltaTop,applyDelta,unmount,render,initCmp,refreshReq,refreshElem,childDiffRes,htmlChange,appendChild,removeChild,replaceTop',
+		dialog: 'addDialog,closeDialog,refreshDialogs'
+	},
 	includeLogs: 'exception,error',
-	stackFilter: /wSpy|jb_spy|Object.log|node_modules/i,
-    extraIgnoredEvents: [], MAX_LOG_SIZE: 10000, DEFAULT_LOGS_COUNT: 300, GROUP_MIN_LEN: 5
+	stackFilter: /spy|jb_spy|Object.log|node_modules/i,
+    extraIgnoredEvents: [], MAX_LOG_SIZE: 10000
 }
-const frame = typeof window === 'object' ? window : typeof self === 'object' ? self : typeof global === 'object' ? global : {};
+const frame = jb.frame
+jb.spySettings = spySettings
 
-function initSpy({Error, settings, wSpyParam, memoryUsage}) {
-    const systemProps = ['index', 'time', '_time', 'mem', 'source']
+jb.initSpy = function({Error, settings, spyParam, memoryUsage, resetSpyToNull}) {
+	Error = Error || frame.Error,
+	memoryUsage = memoryUsage || (() => frame.performance && performance.memory && performance.memory.usedJSHeapSize)
+	settings = Object.assign(settings||{}, spySettings)
+
+	const systemProps = ['index', 'time', '_time', 'mem', 'source']
 
     const isRegex = x => Object.prototype.toString.call(x) === '[object RegExp]'
-    const isString = x => typeof x === 'string' || x instanceof String
+	const isString = x => typeof x === 'string' || x instanceof String
+	if (resetSpyToNull)
+		return jb.spy = null
     
-    return {
-		ver: 7,
+    return jb.spy = {
 		logs: {},
-		wSpyParam,
+		spyParam,
 		otherSpies: [],
+		observable() { 
+			const _jb = jb.path(jb,'studio.studiojb') || jb
+			this._obs = this._obs || _jb.callbag.subject()
+			return this._obs
+		},
 		enabled: () => true,
 		log(logName, record, {takeFrom, funcTitle, modifier} = {}) {
 			const init = () => {
-				if (!this.includeLogs) {
-					const includeLogsFromParam = (this.wSpyParam || '').split(',').filter(x => x[0] !== '-').filter(x => x)
-					const excludeLogsFromParam = (this.wSpyParam || '').split(',').filter(x => x[0] === '-').map(x => x.slice(1))
+				if (!this.initialized) {
+					const includeLogsFromParam = (this.spyParam || '').split(',').filter(x => x[0] !== '-').filter(x => x)
+						.flatMap(x=>Object.keys(settings.groups).indexOf(x) == -1 ? [x] : settings.groups[x].split(','))
+					const excludeLogsFromParam = (this.spyParam || '').split(',').filter(x => x[0] === '-').map(x => x.slice(1))
 					this.includeLogs = settings.includeLogs.split(',').concat(includeLogsFromParam).filter(log => excludeLogsFromParam.indexOf(log) === -1).reduce((acc, log) => {
 						acc[log] = true
 						return acc
 					}, {})
 				}
+				this.initialized = true
 			}
 			const shouldLog = (logName, record) =>
-				this.wSpyParam === 'all' || Array.isArray(record) && this.includeLogs[logName] && !settings.extraIgnoredEvents.includes(record[0])
+				this.spyParam === 'all' || Array.isArray(record) && this.includeLogs[logName] && !settings.extraIgnoredEvents.includes(record[0])
 
 			init()
 			this.logs[logName] = this.logs[logName] || []
@@ -2069,28 +2118,7 @@ function initSpy({Error, settings, wSpyParam, memoryUsage}) {
 				modifier(record)
 			}
 			this.logs[logName].push(record)
-		},
-		getCallbackName(cb, takeFrom) {
-			if (!cb) {
-				return
-			}
-			if (!cb.name || isString(cb.name) && cb.name.startsWith('bound ')) {
-				if (Array.isArray(cb.source)) {
-					return cb.source[0]
-				}
-				const nameFromSource = this.source(takeFrom)
-				if (Array.isArray(nameFromSource)) {
-					return nameFromSource
-				}
-			}
-			return cb.name.trim()
-		},
-		logCallBackRegistration(cb, logName, record, takeFrom) {
-			cb.source = this.source(takeFrom)
-			this.log(logName, [this.getCallbackName(cb, takeFrom), ...record], takeFrom)
-		},
-		logCallBackExecution(cb, logName, record, takeFrom) {
-			this.log(logName, [this.getCallbackName(cb, takeFrom), cb.source, ...record], takeFrom)
+			this._obs && this._obs.next({logName,record})
 		},
 		source(takeFrom) {
 			Error.stackTraceLimit = 50
@@ -2114,32 +2142,28 @@ function initSpy({Error, settings, wSpyParam, memoryUsage}) {
 		},
         
         // browsing methods
-		resetParam: wSpyParam => {
-			this.wSpyParam = wSpyParam;
+		resetParam: spyParam => {
+			this.spyParam = spyParam;
 			this.includeLogs = null;
-		},
-		purge(count) {
-			const countFromEnd = -1 * (count || settings.DEFAULT_LOGS_COUNT)
-			Object.keys(this.logs).forEach(log => this.logs[log] = this.logs[log].slice(countFromEnd))
 		},
 		setLogs(logs) {
 			if (logs === 'all')
-				this.wSpyParam = 'all'
+				this.spyParam = 'all'
 			this.includeLogs = (logs||'').split(',').reduce((acc,log) => {acc[log] = true; return acc },{})
 		},
-		clear(logs) {
+		clear() {
 			Object.keys(this.logs).forEach(log => delete this.logs[log])
 		},
         search(pattern) {
 			if (isRegex(pattern)) {
-				return this.merged(x => pattern.test(x.join(' ')))
+				return this.all(x => pattern.test(x.join(' ')))
 			} else if (isString(pattern)) {
-				return this.merged(x => x.join(' ').indexOf(pattern) !== -1)
+				return this.all(x => x.join(' ').indexOf(pattern) !== -1)
 			} else if (Number.isInteger(pattern)) {
-				return this.merged().slice(-1 * pattern)
+				return this.all().slice(-1 * pattern)
 			}
 		},
-		merged(filter) {
+		all(filter) {
 			return [].concat.apply([], Object.keys(this.logs).filter(log => Array.isArray(this.logs[log])).map(module =>
 				this.logs[module].map(arr => {
 					const res = [arr.index, module, ...arr]
@@ -2150,108 +2174,35 @@ function initSpy({Error, settings, wSpyParam, memoryUsage}) {
 				}))).
 				filter((e, i, src) => !filter || filter(e, i, src)).
 				sort((x, y) => x.index - y.index)
-		},
-		all(filter) {
-			return this.merged(filter)
-		},
-		grouped(filter) {
-			const merged = this.merged(filter)
-			const countFromEnd = -1 * settings.DEFAULT_LOGS_COUNT
-			return [].concat.apply([], merged.reduce((acc, curr, i, arr) => {
-				const group = acc[acc.length - 1]
-				if (!group) {
-					return [newGroup(curr)]
-				}
-				if (curr[1] === group[0][1]) {
-					group.push(curr)
-				} else {
-					if (group.length > settings.GROUP_MIN_LEN) {
-						group.unshift(`[${group.length}] ${group[0][1]}`)
-					}
-					acc.push(newGroup(curr))
-				}
-				if (i === arr.length - 1 && group.length > settings.GROUP_MIN_LEN) {
-					group.unshift(`[${group.length}] ${group[0][1]}`)
-				}
-				return acc
-			}, []).map(e => e.length > settings.GROUP_MIN_LEN ? [e] : e)).
-				slice(countFromEnd).
-				map((x, i, arr) => {
-					const delay = i === 0 ? 0 : x.time - arr[i - 1].time
-					x[0] = `${x[0]} +${delay}`
-					return x
-				})
-			function newGroup(rec) {
-				const res = [rec]
-				res.time = rec.time
-				return res
-			}
 		}
 	}
 } 
 
-const noop = () => false;
-const noopSpy = {
-    log: noop, getCallbackName: noop, logCallBackRegistration: noop, logCallBackExecution: noop, enabled: noop
-}
-
-frame.initwSpy = function(settings = {}) {
-	const getParentUrl = () => { try { return frame.parent.location.href } catch(e) {} }
+function initSpyByUrl() {
 	const getUrl = () => { try { return frame.location.href } catch(e) {} }
-	const getSpyParam = url => (url.match('[?&]w[sS]py=([^&]+)') || ['', ''])[1]
-	const getFirstLoadedSpy = () => { try { return frame.parent && frame.parent.wSpy || frame.wSpy } catch(e) {} }
-	function saveOnFrame(wSpy) { 
-		try { 
-			frame.wSpy = wSpy;  
-			if (frame.parent)
-				frame.parent.wSpy = wSpy
-		} catch(e) {} 
-		return wSpy
-	}
-
-	function doInit() {
-		try {
-			if (settings.forceNoop)
-				return noopSpy
-			const existingSpy = getFirstLoadedSpy();
-			if (existingSpy && existingSpy.enabled())
-				return existingSpy;
-	
-			const wSpyParam = settings.wSpyParam || getSpyParam(getParentUrl() || '') || getSpyParam(getUrl() || '')
-			if (wSpyParam) return initSpy({
-				Error: frame.Error,
-				memoryUsage: () => frame.performance && performance.memory && performance.memory.usedJSHeapSize,
-				wSpyParam,
-				settings: Object.assign(settings, spySettings)
-			});
-		} catch (e) {}
-		return noopSpy
-	}
-
-	return saveOnFrame(doInit())
+	const getParentUrl = () => { try { return frame.parent && frame.parent.location.href } catch(e) {} }
+	const getSpyParam = url => (url.match('[?&]spy=([^&]+)') || ['', ''])[1]
+	const spyParam = getSpyParam(getParentUrl() || '') || getSpyParam(getUrl() || '')
+	if (spyParam)
+		jb.initSpy({spyParam})
+	if (jb.frame) jb.frame.spy = jb.spy // for console use
 }
-
-if (typeof window == 'object') {
-	frame.initwSpy()
-}
+initSpyByUrl()
 
 })()
 ;
 
-
-jb.component('pretty-print', { /* prettyPrint */
+jb.component('prettyPrint', {
   params: [
     {id: 'profile', defaultValue: '%%'},
-    {id: 'colWidth', as: 'number', defaultValue: 140},
-    {id: 'macro', as: 'boolean', type: 'boolean'}
+    {id: 'forceFlat', as: 'boolean', type: 'boolean'}
   ],
-  impl: (ctx,profile) =>
-    jb.prettyPrint(profile,ctx.params)
+  impl: (ctx,profile) => jb.prettyPrint(jb.val(profile),ctx.params)
 })
 
 jb.prettyPrintComp = function(compId,comp,settings={}) {
   if (comp) {
-    const macroRemark = ` /* ${jb.macroName(compId)} */`
+    const macroRemark = ''; //` /* ${jb.macroName(compId)} */`
     const res = "jb.component('" + compId + "', " + jb.prettyPrint(comp,settings) + ')'
     const withMacroName = res.replace(/\n/, macroRemark + '\n')
     return withMacroName
@@ -2267,11 +2218,12 @@ jb.prettyPrint.advanceLineCol = function({line,col},text) {
   const newCol = noOfLines ? text.match(/\n(.*)$/)[1].length : col + text.length
   return { line: line + noOfLines, col: newCol }
 }
+jb.prettyPrint.spaces = Array.from(new Array(200)).map(_=>' ').join('');
 
-const spaces = Array.from(new Array(200)).map(_=>' ').join('')
-jb.prettyPrintWithPositions = function(val,{colWidth=80,tabSize=2,initialPath='',showNulls} = {}) {
+jb.prettyPrintWithPositions = function(val,{colWidth=80,tabSize=2,initialPath='',noMacros,comps,forceFlat} = {}) {
+  comps = comps || jb.comps
   if (!val || typeof val !== 'object')
-    return { text: val.toString(), map: {} }
+    return { text: val != null && val.toString ? val.toString() : JSON.stringify(val), map: {} }
 
   const advanceLineCol = jb.prettyPrint.advanceLineCol
   return valueToMacro({path: initialPath, line:0, col: 0}, val)
@@ -2308,24 +2260,25 @@ jb.prettyPrintWithPositions = function(val,{colWidth=80,tabSize=2,initialPath=''
     const result = processList(beforeClose, [{prop: '!close-newline', item: () => newLine(-1)}, ..._close])
 
     const unflat = shouldNotFlat(result)
-    if (!unflat && !flat)
+    if ((forceFlat || !unflat) && !flat)
       return joinVals(ctx, innerVals, open, close, true, isArray)
     return Object.assign(result,{unflat})
 
-
     function newLine(offset = 0) {
-      return flat ? '' : '\n' + spaces.slice(0,((path.match(/~/g)||'').length+offset+1)*tabSize)
+      return flat ? '' : '\n' + jb.prettyPrint.spaces.slice(0,((path.match(/~/g)||'').length+offset+1)*tabSize)
     }
 
     function shouldNotFlat(result) {
-      const ctrls = path.match(/~controls$/) && Array.isArray(jb.studio.valOfPath(path)) // && innerVals.length > 1// jb.studio.isOfType(path,'control') && !arrayElem
-      const customStyle = jb.studio.compNameOfPath(path) === 'customStyle'
+      const val = jb.studio.valOfPath(path)
+      if (path.match(/~params~[0-9]+$/)) return false
+      const ctrls = path.match(/~controls$/) && Array.isArray(val) // && innerVals.length > 1// jb.studio.isOfType(path,'control') && !arrayElem
+      const customStyle = jb.studio.compNameOfPath && jb.studio.compNameOfPath(path) === 'customStyle'
       const top = (path.match(/~/g)||'').length < 2
       const long = result.text.replace(/\n\s*/g,'').length > colWidth
       return result.unflat || customStyle || top || ctrls || long
     }
     function fixPropName(prop) {
-      return prop.match(/^[a-zA-Z0-9_]+$/) ? prop : `'${prop}'`
+      return prop.match(/^[a-zA-Z_][a-zA-Z0-9_]*$/) ? prop : `'${prop}'`
     }
   }
 
@@ -2333,10 +2286,10 @@ jb.prettyPrintWithPositions = function(val,{colWidth=80,tabSize=2,initialPath=''
     const ctx = {path, line, col}
 
     const id = [jb.compName(profile)].map(x=> x=='var' ? 'variable' : x)[0]
-    const comp = jb.comps[id]
+    const comp = comps[id]
     if (comp)
       jb.fixByValue(profile,comp)
-    if (!id || !comp || ',object,var,'.indexOf(`,${id},`) != -1) { // result as is
+    if (noMacros || !id || !comp || ',object,var,'.indexOf(`,${id},`) != -1) { // result as is
       const props = Object.keys(profile)
       if (props.indexOf('$') > 0) { // make the $ first
         props.splice(props.indexOf('$'),1);
@@ -2365,20 +2318,20 @@ jb.prettyPrintWithPositions = function(val,{colWidth=80,tabSize=2,initialPath=''
     }
     const keys = Object.keys(profile).filter(x=>x != '$')
     const oneFirstParam = keys.length === 1 && params[0] && params[0].id == keys[0]
-        && (typeof attOfProfile(keys[0]) !== 'object' || Array.isArray(attOfProfile(keys[0])))
-    if ((params.length < 3 && comp.usageByValue !== false) || comp.usageByValue || oneFirstParam) {
-      const args = systemProps.concat(params.map(param=>({innerPath: param.id, val: attOfProfile(param.id)})))
+        && (typeof propOfProfile(keys[0]) !== 'object' || Array.isArray(propOfProfile(keys[0])))
+    if ((params.length < 3 && comp.macroByValue !== false) || comp.macroByValue || oneFirstParam) {
+      const args = systemProps.concat(params.map(param=>({innerPath: param.id, val: propOfProfile(param.id)})))
       for(let i=0;i<5;i++)
         if (args.length && (!args[args.length-1] || args[args.length-1].val === undefined)) args.pop()
       return joinVals(ctx, args, openProfileByValueGroup, closeProfileByValueGroup, flat, true)
     }
     const remarkProp = profile.remark ? [{innerPath: 'remark', val: profile.remark} ] : []
     const systemPropsInObj = remarkProp.concat(vars.length ? [{innerPath: 'vars', val: vars.map(x=>x.val)}] : [])
-    const args = systemPropsInObj.concat(params.filter(param=>attOfProfile(param.id) !== undefined)
-        .map(param=>({innerPath: param.id, val: attOfProfile(param.id)})))
+    const args = systemPropsInObj.concat(params.filter(param=>propOfProfile(param.id) !== undefined)
+        .map(param=>({innerPath: param.id, val: propOfProfile(param.id)})))
       return joinVals(ctx, args,openProfileGroup, closeProfileGroup, flat, false)
 
-    function attOfProfile(paramId) {
+    function propOfProfile(paramId) {
       const isFirst = params[0] && params[0].id == paramId
       return isFirst && profile['$'+id] || profile[paramId]
     }
@@ -2412,7 +2365,7 @@ jb.prettyPrintWithPositions = function(val,{colWidth=80,tabSize=2,initialPath=''
       else
         return JSON.stringify(val); // primitives
     }
-}
+  }
 
   function arrayToMacro({path, line, col}, array, flat) {
     const ctx = {path, line, col}
@@ -2422,155 +2375,9 @@ jb.prettyPrintWithPositions = function(val,{colWidth=80,tabSize=2,initialPath=''
 
     return joinVals(ctx, vals, openArray, closeArray, flat, true)
   }
+}
 
-  function rawFormat() {
-    let remainedInLine = colWidth;
-    let result = '';
-    let depth = 0;
-    let lineNum = 0;
-    let positions = {};
-    printValue(profile,initialPath || '');
-    return { result, positions }
-
-    function sortedPropertyNames(obj) {
-      let props = jb.entries(obj)
-        .filter(p=>showNulls || p[1] != null)
-        .map(x=>x[0]) // try to keep the order
-        .filter(p=>p.indexOf('$jb') != 0)
-
-      const comp_name = jb.compName(obj);
-      if (comp_name) { // tgp obj - sort by params def
-        const params = jb.compParams(jb.comps[comp_name]).map(p=>p.id);
-        props.sort((p1,p2)=>params.indexOf(p1) - params.indexOf(p2));
-      }
-      if (props.indexOf('$') > 0) { // make the $ first
-        props.splice(props.indexOf('$'),1);
-        props.unshift('$');
-      }
-      return props;
-    }
-
-    function printValue(val,path) {
-      positions[path] = lineNum;
-      if (!val) return;
-      if (val.$jb_arrayShortcut)
-        val = val.items;
-      if (Array.isArray(val)) return printArray(val,path);
-      if (typeof val === 'object') return printObj(val,path);
-      if (typeof val === 'function')
-        result += val.toString();
-      else if (typeof val === 'string' && val.indexOf("'") == -1 && val.indexOf('\n') == -1)
-        result += "'" + JSON.stringify(val).replace(/^"/,'').replace(/"$/,'') + "'";
-      else if (typeof val === 'string' && val.indexOf('\n') != -1) {
-        result += "`" + val.replace(/`/g,'\\`') + "`"
-      } else {
-        result += JSON.stringify(val);
-      }
-    }
-
-    function printObj(obj,path) {
-        var obj_str = flat_obj(obj);
-        if (!printInLine(obj_str)) { // object does not fit in parent line
-          depth++;
-          result += '{';
-          if (!printInLine(obj_str)) { // object does not fit in its own line
-            sortedPropertyNames(obj).forEach(function(prop,index,array) {
-                if (prop != '$')
-                  newLine();
-                if (showNulls || obj[prop] != null) {
-                  printProp(obj,prop,path);
-                  if (index < array.length -1)
-                    result += ', ';//newLine();
-                }
-            });
-          }
-          depth--;
-          newLine();
-          result += '}';
-        }
-    }
-    function quotePropName(p) {
-      if (p.match(/^[$a-zA-Z_][$a-zA-Z0-9_]*$/))
-        return p;
-      else
-        return `"${p}"`
-    }
-    function printProp(obj,prop,path) {
-      if (obj[prop] && obj[prop].$jb_arrayShortcut)
-        obj = obj(prop,obj[prop].items);
-
-      if (printInLine(flat_property(obj,prop))) return;
-
-      if (prop == '$')
-        result += '$: '
-      else
-        result += quotePropName(prop) + (jb.compName(obj[prop]) ? ' :' : ': ');
-      //depth++;
-      printValue(obj[prop],path+'~'+prop);
-      //depth--;
-    }
-    function printArray(array,path) {
-      if (printInLine(flat_array(array))) return;
-      result += '[';
-      depth++;
-      newLine();
-      array.forEach(function(val,index) {
-        printValue(val,path+'~'+index);
-        if (index < array.length -1) {
-          result += ', ';
-          newLine();
-        }
-      })
-      depth--;newLine();
-      result += ']';
-    }
-    function printInLine(text) {
-      if (remainedInLine < text.length || text.match(/:\s?{/) || text.match(/, {\$/)) return false;
-      result += text;
-      remainedInLine -= text.length;
-      return true;
-    }
-    function newLine() {
-      result += '\n';
-      lineNum++;
-      for (var i = 0; i < depth; i++) result += '               '.substr(0,tabSize);
-      remainedInLine = colWidth - tabSize * depth;
-    }
-
-    function flat_obj(obj) {
-      var props = sortedPropertyNames(obj)
-        .filter(p=>showNulls || obj[p] != null)
-        .filter(x=>x!='$')
-        .map(prop =>
-        quotePropName(prop) + ': ' + flat_val(obj[prop]));
-      if (obj && obj.$) {
-        props.unshift("$: '" + obj.$+ "'");
-        return '{' + props.join(', ') + ' }'
-      }
-      return '{ ' + props.join(', ') + ' }'
-    }
-    function flat_property(obj,prop) {
-      if (jb.compName(obj[prop]))
-        return quotePropName(prop) + ' :' + flat_val(obj[prop]);
-      else
-        return quotePropName(prop) + ': ' + flat_val(obj[prop]);
-    }
-    function flat_val(val) {
-      if (Array.isArray(val)) return flat_array(val);
-      if (typeof val === 'object') return flat_obj(val);
-      if (typeof val === 'function') return val.toString();
-      if (typeof val === 'string' && val.indexOf("'") == -1 && val.indexOf('\n') == -1)
-        return "'" + JSON.stringify(val).replace(/^"/,'').replace(/"$/,'') + "'";
-      else
-        return JSON.stringify(val); // primitives
-    }
-    function flat_array(array) {
-      return '[' + array.map(item=>flat_val(item)).join(', ') + ']';
-    }
-
-  }
-
-};
+;
 
 jb.xml = jb.xml || {}
 
@@ -2691,7 +2498,7 @@ jb.xml.xmlToJson = xml => {
 /******/
 /******/
 /******/ 	// Load entry module and return exports
-/******/ 	return __webpack_require__(__webpack_require__.s = "./src/misc/jb-jison.js");
+/******/ 	return __webpack_require__(__webpack_require__.s = "./src/misc/pack-jison.js");
 /******/ })
 /************************************************************************/
 /******/ ({
@@ -2824,7 +2631,7 @@ eval("/*\n * Copyright 2009-2011 Mozilla Foundation and contributors\n * License
 /*! exports provided: name, description, homepage, main, bin, version, engines, maintainers, repository, dependencies, optionalDependencies, devDependencies, licenses, scripts, default */
 /***/ (function(module) {
 
-eval("module.exports = {\"name\":\"escodegen\",\"description\":\"ECMAScript code generator\",\"homepage\":\"http://github.com/Constellation/escodegen\",\"main\":\"escodegen.js\",\"bin\":{\"esgenerate\":\"./bin/esgenerate.js\",\"escodegen\":\"./bin/escodegen.js\"},\"version\":\"1.3.3\",\"engines\":{\"node\":\">=0.10.0\"},\"maintainers\":[{\"name\":\"Yusuke Suzuki\",\"email\":\"utatane.tea@gmail.com\",\"web\":\"http://github.com/Constellation\"}],\"repository\":{\"type\":\"git\",\"url\":\"http://github.com/Constellation/escodegen.git\"},\"dependencies\":{\"esutils\":\"~1.0.0\",\"estraverse\":\"~1.5.0\",\"esprima\":\"~1.1.1\"},\"optionalDependencies\":{\"source-map\":\"~0.1.33\"},\"devDependencies\":{\"esprima-moz\":\"*\",\"semver\":\"*\",\"chai\":\"~1.7.2\",\"gulp\":\"~3.5.0\",\"gulp-mocha\":\"~0.4.1\",\"gulp-eslint\":\"~0.1.2\",\"jshint-stylish\":\"~0.1.5\",\"gulp-jshint\":\"~1.4.0\",\"commonjs-everywhere\":\"~0.9.6\",\"bluebird\":\"~1.2.0\",\"bower-registry-client\":\"~0.2.0\"},\"licenses\":[{\"type\":\"BSD\",\"url\":\"http://github.com/Constellation/escodegen/raw/master/LICENSE.BSD\"}],\"scripts\":{\"test\":\"gulp travis\",\"unit-test\":\"gulp test\",\"lint\":\"gulp lint\",\"release\":\"node tools/release.js\",\"build-min\":\"./node_modules/.bin/cjsify -ma path: tools/entry-point.js > escodegen.browser.min.js\",\"build\":\"./node_modules/.bin/cjsify -a path: tools/entry-point.js > escodegen.browser.js\"}};\n\n//# sourceURL=webpack:///./node_modules/escodegen/package.json?");
+eval("module.exports = JSON.parse(\"{\\\"name\\\":\\\"escodegen\\\",\\\"description\\\":\\\"ECMAScript code generator\\\",\\\"homepage\\\":\\\"http://github.com/Constellation/escodegen\\\",\\\"main\\\":\\\"escodegen.js\\\",\\\"bin\\\":{\\\"esgenerate\\\":\\\"./bin/esgenerate.js\\\",\\\"escodegen\\\":\\\"./bin/escodegen.js\\\"},\\\"version\\\":\\\"1.3.3\\\",\\\"engines\\\":{\\\"node\\\":\\\">=0.10.0\\\"},\\\"maintainers\\\":[{\\\"name\\\":\\\"Yusuke Suzuki\\\",\\\"email\\\":\\\"utatane.tea@gmail.com\\\",\\\"web\\\":\\\"http://github.com/Constellation\\\"}],\\\"repository\\\":{\\\"type\\\":\\\"git\\\",\\\"url\\\":\\\"http://github.com/Constellation/escodegen.git\\\"},\\\"dependencies\\\":{\\\"esutils\\\":\\\"~1.0.0\\\",\\\"estraverse\\\":\\\"~1.5.0\\\",\\\"esprima\\\":\\\"~1.1.1\\\"},\\\"optionalDependencies\\\":{\\\"source-map\\\":\\\"~0.1.33\\\"},\\\"devDependencies\\\":{\\\"esprima-moz\\\":\\\"*\\\",\\\"semver\\\":\\\"*\\\",\\\"chai\\\":\\\"~1.7.2\\\",\\\"gulp\\\":\\\"~3.5.0\\\",\\\"gulp-mocha\\\":\\\"~0.4.1\\\",\\\"gulp-eslint\\\":\\\"~0.1.2\\\",\\\"jshint-stylish\\\":\\\"~0.1.5\\\",\\\"gulp-jshint\\\":\\\"~1.4.0\\\",\\\"commonjs-everywhere\\\":\\\"~0.9.6\\\",\\\"bluebird\\\":\\\"~1.2.0\\\",\\\"bower-registry-client\\\":\\\"~0.2.0\\\"},\\\"licenses\\\":[{\\\"type\\\":\\\"BSD\\\",\\\"url\\\":\\\"http://github.com/Constellation/escodegen/raw/master/LICENSE.BSD\\\"}],\\\"scripts\\\":{\\\"test\\\":\\\"gulp travis\\\",\\\"unit-test\\\":\\\"gulp test\\\",\\\"lint\\\":\\\"gulp lint\\\",\\\"release\\\":\\\"node tools/release.js\\\",\\\"build-min\\\":\\\"./node_modules/.bin/cjsify -ma path: tools/entry-point.js > escodegen.browser.min.js\\\",\\\"build\\\":\\\"./node_modules/.bin/cjsify -a path: tools/entry-point.js > escodegen.browser.js\\\"}}\");\n\n//# sourceURL=webpack:///./node_modules/escodegen/package.json?");
 
 /***/ }),
 
@@ -2835,7 +2642,7 @@ eval("module.exports = {\"name\":\"escodegen\",\"description\":\"ECMAScript code
 /*! exports provided: author, name, description, version, keywords, repository, bugs, main, bin, engines, dependencies, devDependencies, scripts, directories, homepage, default */
 /***/ (function(module) {
 
-eval("module.exports = {\"author\":\"Zach Carter <zach@carter.name> (http://zaa.ch)\",\"name\":\"jison-lex\",\"description\":\"lexical analyzer generator used by jison\",\"version\":\"0.3.4\",\"keywords\":[\"jison\",\"parser\",\"generator\",\"lexer\",\"flex\",\"tokenizer\"],\"repository\":{\"type\":\"git\",\"url\":\"git://github.com/zaach/jison-lex.git\"},\"bugs\":{\"email\":\"jison@librelist.com\",\"url\":\"http://github.com/zaach/jison-lex/issues\"},\"main\":\"regexp-lexer\",\"bin\":\"cli.js\",\"engines\":{\"node\":\">=0.4\"},\"dependencies\":{\"lex-parser\":\"0.1.x\",\"nomnom\":\"1.5.2\"},\"devDependencies\":{\"test\":\"0.4.4\"},\"scripts\":{\"test\":\"node tests/all-tests.js\"},\"directories\":{\"lib\":\"lib\",\"tests\":\"tests\"},\"homepage\":\"http://jison.org\"};\n\n//# sourceURL=webpack:///./node_modules/jison-lex/package.json?");
+eval("module.exports = JSON.parse(\"{\\\"author\\\":\\\"Zach Carter <zach@carter.name> (http://zaa.ch)\\\",\\\"name\\\":\\\"jison-lex\\\",\\\"description\\\":\\\"lexical analyzer generator used by jison\\\",\\\"version\\\":\\\"0.3.4\\\",\\\"keywords\\\":[\\\"jison\\\",\\\"parser\\\",\\\"generator\\\",\\\"lexer\\\",\\\"flex\\\",\\\"tokenizer\\\"],\\\"repository\\\":{\\\"type\\\":\\\"git\\\",\\\"url\\\":\\\"git://github.com/zaach/jison-lex.git\\\"},\\\"bugs\\\":{\\\"email\\\":\\\"jison@librelist.com\\\",\\\"url\\\":\\\"http://github.com/zaach/jison-lex/issues\\\"},\\\"main\\\":\\\"regexp-lexer\\\",\\\"bin\\\":\\\"cli.js\\\",\\\"engines\\\":{\\\"node\\\":\\\">=0.4\\\"},\\\"dependencies\\\":{\\\"lex-parser\\\":\\\"0.1.x\\\",\\\"nomnom\\\":\\\"1.5.2\\\"},\\\"devDependencies\\\":{\\\"test\\\":\\\"0.4.4\\\"},\\\"scripts\\\":{\\\"test\\\":\\\"node tests/all-tests.js\\\"},\\\"directories\\\":{\\\"lib\\\":\\\"lib\\\",\\\"tests\\\":\\\"tests\\\"},\\\"homepage\\\":\\\"http://jison.org\\\"}\");\n\n//# sourceURL=webpack:///./node_modules/jison-lex/package.json?");
 
 /***/ }),
 
@@ -2902,7 +2709,7 @@ eval("var __WEBPACK_AMD_DEFINE_FACTORY__, __WEBPACK_AMD_DEFINE_ARRAY__, __WEBPAC
 /*! exports provided: author, name, description, version, license, keywords, preferGlobal, repository, bugs, main, bin, engines, dependencies, devDependencies, scripts, homepage, default */
 /***/ (function(module) {
 
-eval("module.exports = {\"author\":\"Zach Carter <zach@carter.name> (http://zaa.ch)\",\"name\":\"jison\",\"description\":\"A parser generator with Bison's API\",\"version\":\"0.4.18\",\"license\":\"MIT\",\"keywords\":[\"jison\",\"bison\",\"yacc\",\"parser\",\"generator\",\"lexer\",\"flex\",\"tokenizer\",\"compiler\"],\"preferGlobal\":true,\"repository\":{\"type\":\"git\",\"url\":\"git://github.com/zaach/jison.git\"},\"bugs\":{\"email\":\"jison@librelist.com\",\"url\":\"http://github.com/zaach/jison/issues\"},\"main\":\"lib/jison\",\"bin\":\"lib/cli.js\",\"engines\":{\"node\":\">=0.4\"},\"dependencies\":{\"JSONSelect\":\"0.4.0\",\"esprima\":\"1.1.x\",\"escodegen\":\"1.3.x\",\"jison-lex\":\"0.3.x\",\"ebnf-parser\":\"0.1.10\",\"lex-parser\":\"~0.1.3\",\"nomnom\":\"1.5.2\",\"cjson\":\"0.3.0\"},\"devDependencies\":{\"test\":\"0.6.x\",\"jison\":\"0.4.x\",\"uglify-js\":\"~2.4.0\",\"browserify\":\"2.x.x\"},\"scripts\":{\"test\":\"node tests/all-tests.js\"},\"homepage\":\"http://jison.org\"};\n\n//# sourceURL=webpack:///./node_modules/jison/package.json?");
+eval("module.exports = JSON.parse(\"{\\\"author\\\":\\\"Zach Carter <zach@carter.name> (http://zaa.ch)\\\",\\\"name\\\":\\\"jison\\\",\\\"description\\\":\\\"A parser generator with Bison's API\\\",\\\"version\\\":\\\"0.4.18\\\",\\\"license\\\":\\\"MIT\\\",\\\"keywords\\\":[\\\"jison\\\",\\\"bison\\\",\\\"yacc\\\",\\\"parser\\\",\\\"generator\\\",\\\"lexer\\\",\\\"flex\\\",\\\"tokenizer\\\",\\\"compiler\\\"],\\\"preferGlobal\\\":true,\\\"repository\\\":{\\\"type\\\":\\\"git\\\",\\\"url\\\":\\\"git://github.com/zaach/jison.git\\\"},\\\"bugs\\\":{\\\"email\\\":\\\"jison@librelist.com\\\",\\\"url\\\":\\\"http://github.com/zaach/jison/issues\\\"},\\\"main\\\":\\\"lib/jison\\\",\\\"bin\\\":\\\"lib/cli.js\\\",\\\"engines\\\":{\\\"node\\\":\\\">=0.4\\\"},\\\"dependencies\\\":{\\\"JSONSelect\\\":\\\"0.4.0\\\",\\\"esprima\\\":\\\"1.1.x\\\",\\\"escodegen\\\":\\\"1.3.x\\\",\\\"jison-lex\\\":\\\"0.3.x\\\",\\\"ebnf-parser\\\":\\\"0.1.10\\\",\\\"lex-parser\\\":\\\"~0.1.3\\\",\\\"nomnom\\\":\\\"1.5.2\\\",\\\"cjson\\\":\\\"0.3.0\\\"},\\\"devDependencies\\\":{\\\"test\\\":\\\"0.6.x\\\",\\\"jison\\\":\\\"0.4.x\\\",\\\"uglify-js\\\":\\\"~2.4.0\\\",\\\"browserify\\\":\\\"2.x.x\\\"},\\\"scripts\\\":{\\\"test\\\":\\\"node tests/all-tests.js\\\"},\\\"homepage\\\":\\\"http://jison.org\\\"}\");\n\n//# sourceURL=webpack:///./node_modules/jison/package.json?");
 
 /***/ }),
 
@@ -2935,7 +2742,7 @@ eval("\n\n//# sourceURL=webpack:///./node_modules/node-libs-browser/mock/empty.j
 /*! no static exports found */
 /***/ (function(module, exports, __webpack_require__) {
 
-eval("/* WEBPACK VAR INJECTION */(function(process) {// Copyright Joyent, Inc. and other Node contributors.\n//\n// Permission is hereby granted, free of charge, to any person obtaining a\n// copy of this software and associated documentation files (the\n// \"Software\"), to deal in the Software without restriction, including\n// without limitation the rights to use, copy, modify, merge, publish,\n// distribute, sublicense, and/or sell copies of the Software, and to permit\n// persons to whom the Software is furnished to do so, subject to the\n// following conditions:\n//\n// The above copyright notice and this permission notice shall be included\n// in all copies or substantial portions of the Software.\n//\n// THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN\n// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,\n// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR\n// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE\n// USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n// resolves . and .. elements in a path array with directory names there\n// must be no slashes, empty elements, or device names (c:\\) in the array\n// (so also no leading and trailing slashes - it does not distinguish\n// relative and absolute paths)\nfunction normalizeArray(parts, allowAboveRoot) {\n  // if the path tries to go above the root, `up` ends up > 0\n  var up = 0;\n  for (var i = parts.length - 1; i >= 0; i--) {\n    var last = parts[i];\n    if (last === '.') {\n      parts.splice(i, 1);\n    } else if (last === '..') {\n      parts.splice(i, 1);\n      up++;\n    } else if (up) {\n      parts.splice(i, 1);\n      up--;\n    }\n  }\n\n  // if the path is allowed to go above the root, restore leading ..s\n  if (allowAboveRoot) {\n    for (; up--; up) {\n      parts.unshift('..');\n    }\n  }\n\n  return parts;\n}\n\n// Split a filename into [root, dir, basename, ext], unix version\n// 'root' is just a slash, or nothing.\nvar splitPathRe =\n    /^(\\/?|)([\\s\\S]*?)((?:\\.{1,2}|[^\\/]+?|)(\\.[^.\\/]*|))(?:[\\/]*)$/;\nvar splitPath = function(filename) {\n  return splitPathRe.exec(filename).slice(1);\n};\n\n// path.resolve([from ...], to)\n// posix version\nexports.resolve = function() {\n  var resolvedPath = '',\n      resolvedAbsolute = false;\n\n  for (var i = arguments.length - 1; i >= -1 && !resolvedAbsolute; i--) {\n    var path = (i >= 0) ? arguments[i] : process.cwd();\n\n    // Skip empty and invalid entries\n    if (typeof path !== 'string') {\n      throw new TypeError('Arguments to path.resolve must be strings');\n    } else if (!path) {\n      continue;\n    }\n\n    resolvedPath = path + '/' + resolvedPath;\n    resolvedAbsolute = path.charAt(0) === '/';\n  }\n\n  // At this point the path should be resolved to a full absolute path, but\n  // handle relative paths to be safe (might happen when process.cwd() fails)\n\n  // Normalize the path\n  resolvedPath = normalizeArray(filter(resolvedPath.split('/'), function(p) {\n    return !!p;\n  }), !resolvedAbsolute).join('/');\n\n  return ((resolvedAbsolute ? '/' : '') + resolvedPath) || '.';\n};\n\n// path.normalize(path)\n// posix version\nexports.normalize = function(path) {\n  var isAbsolute = exports.isAbsolute(path),\n      trailingSlash = substr(path, -1) === '/';\n\n  // Normalize the path\n  path = normalizeArray(filter(path.split('/'), function(p) {\n    return !!p;\n  }), !isAbsolute).join('/');\n\n  if (!path && !isAbsolute) {\n    path = '.';\n  }\n  if (path && trailingSlash) {\n    path += '/';\n  }\n\n  return (isAbsolute ? '/' : '') + path;\n};\n\n// posix version\nexports.isAbsolute = function(path) {\n  return path.charAt(0) === '/';\n};\n\n// posix version\nexports.join = function() {\n  var paths = Array.prototype.slice.call(arguments, 0);\n  return exports.normalize(filter(paths, function(p, index) {\n    if (typeof p !== 'string') {\n      throw new TypeError('Arguments to path.join must be strings');\n    }\n    return p;\n  }).join('/'));\n};\n\n\n// path.relative(from, to)\n// posix version\nexports.relative = function(from, to) {\n  from = exports.resolve(from).substr(1);\n  to = exports.resolve(to).substr(1);\n\n  function trim(arr) {\n    var start = 0;\n    for (; start < arr.length; start++) {\n      if (arr[start] !== '') break;\n    }\n\n    var end = arr.length - 1;\n    for (; end >= 0; end--) {\n      if (arr[end] !== '') break;\n    }\n\n    if (start > end) return [];\n    return arr.slice(start, end - start + 1);\n  }\n\n  var fromParts = trim(from.split('/'));\n  var toParts = trim(to.split('/'));\n\n  var length = Math.min(fromParts.length, toParts.length);\n  var samePartsLength = length;\n  for (var i = 0; i < length; i++) {\n    if (fromParts[i] !== toParts[i]) {\n      samePartsLength = i;\n      break;\n    }\n  }\n\n  var outputParts = [];\n  for (var i = samePartsLength; i < fromParts.length; i++) {\n    outputParts.push('..');\n  }\n\n  outputParts = outputParts.concat(toParts.slice(samePartsLength));\n\n  return outputParts.join('/');\n};\n\nexports.sep = '/';\nexports.delimiter = ':';\n\nexports.dirname = function(path) {\n  var result = splitPath(path),\n      root = result[0],\n      dir = result[1];\n\n  if (!root && !dir) {\n    // No dirname whatsoever\n    return '.';\n  }\n\n  if (dir) {\n    // It has a dirname, strip trailing slash\n    dir = dir.substr(0, dir.length - 1);\n  }\n\n  return root + dir;\n};\n\n\nexports.basename = function(path, ext) {\n  var f = splitPath(path)[2];\n  // TODO: make this comparison case-insensitive on windows?\n  if (ext && f.substr(-1 * ext.length) === ext) {\n    f = f.substr(0, f.length - ext.length);\n  }\n  return f;\n};\n\n\nexports.extname = function(path) {\n  return splitPath(path)[3];\n};\n\nfunction filter (xs, f) {\n    if (xs.filter) return xs.filter(f);\n    var res = [];\n    for (var i = 0; i < xs.length; i++) {\n        if (f(xs[i], i, xs)) res.push(xs[i]);\n    }\n    return res;\n}\n\n// String.prototype.substr - negative index don't work in IE8\nvar substr = 'ab'.substr(-1) === 'b'\n    ? function (str, start, len) { return str.substr(start, len) }\n    : function (str, start, len) {\n        if (start < 0) start = str.length + start;\n        return str.substr(start, len);\n    }\n;\n\n/* WEBPACK VAR INJECTION */}.call(this, __webpack_require__(/*! ./../process/browser.js */ \"./node_modules/process/browser.js\")))\n\n//# sourceURL=webpack:///./node_modules/path-browserify/index.js?");
+eval("/* WEBPACK VAR INJECTION */(function(process) {// .dirname, .basename, and .extname methods are extracted from Node.js v8.11.1,\n// backported and transplited with Babel, with backwards-compat fixes\n\n// Copyright Joyent, Inc. and other Node contributors.\n//\n// Permission is hereby granted, free of charge, to any person obtaining a\n// copy of this software and associated documentation files (the\n// \"Software\"), to deal in the Software without restriction, including\n// without limitation the rights to use, copy, modify, merge, publish,\n// distribute, sublicense, and/or sell copies of the Software, and to permit\n// persons to whom the Software is furnished to do so, subject to the\n// following conditions:\n//\n// The above copyright notice and this permission notice shall be included\n// in all copies or substantial portions of the Software.\n//\n// THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN\n// NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,\n// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR\n// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE\n// USE OR OTHER DEALINGS IN THE SOFTWARE.\n\n// resolves . and .. elements in a path array with directory names there\n// must be no slashes, empty elements, or device names (c:\\) in the array\n// (so also no leading and trailing slashes - it does not distinguish\n// relative and absolute paths)\nfunction normalizeArray(parts, allowAboveRoot) {\n  // if the path tries to go above the root, `up` ends up > 0\n  var up = 0;\n  for (var i = parts.length - 1; i >= 0; i--) {\n    var last = parts[i];\n    if (last === '.') {\n      parts.splice(i, 1);\n    } else if (last === '..') {\n      parts.splice(i, 1);\n      up++;\n    } else if (up) {\n      parts.splice(i, 1);\n      up--;\n    }\n  }\n\n  // if the path is allowed to go above the root, restore leading ..s\n  if (allowAboveRoot) {\n    for (; up--; up) {\n      parts.unshift('..');\n    }\n  }\n\n  return parts;\n}\n\n// path.resolve([from ...], to)\n// posix version\nexports.resolve = function() {\n  var resolvedPath = '',\n      resolvedAbsolute = false;\n\n  for (var i = arguments.length - 1; i >= -1 && !resolvedAbsolute; i--) {\n    var path = (i >= 0) ? arguments[i] : process.cwd();\n\n    // Skip empty and invalid entries\n    if (typeof path !== 'string') {\n      throw new TypeError('Arguments to path.resolve must be strings');\n    } else if (!path) {\n      continue;\n    }\n\n    resolvedPath = path + '/' + resolvedPath;\n    resolvedAbsolute = path.charAt(0) === '/';\n  }\n\n  // At this point the path should be resolved to a full absolute path, but\n  // handle relative paths to be safe (might happen when process.cwd() fails)\n\n  // Normalize the path\n  resolvedPath = normalizeArray(filter(resolvedPath.split('/'), function(p) {\n    return !!p;\n  }), !resolvedAbsolute).join('/');\n\n  return ((resolvedAbsolute ? '/' : '') + resolvedPath) || '.';\n};\n\n// path.normalize(path)\n// posix version\nexports.normalize = function(path) {\n  var isAbsolute = exports.isAbsolute(path),\n      trailingSlash = substr(path, -1) === '/';\n\n  // Normalize the path\n  path = normalizeArray(filter(path.split('/'), function(p) {\n    return !!p;\n  }), !isAbsolute).join('/');\n\n  if (!path && !isAbsolute) {\n    path = '.';\n  }\n  if (path && trailingSlash) {\n    path += '/';\n  }\n\n  return (isAbsolute ? '/' : '') + path;\n};\n\n// posix version\nexports.isAbsolute = function(path) {\n  return path.charAt(0) === '/';\n};\n\n// posix version\nexports.join = function() {\n  var paths = Array.prototype.slice.call(arguments, 0);\n  return exports.normalize(filter(paths, function(p, index) {\n    if (typeof p !== 'string') {\n      throw new TypeError('Arguments to path.join must be strings');\n    }\n    return p;\n  }).join('/'));\n};\n\n\n// path.relative(from, to)\n// posix version\nexports.relative = function(from, to) {\n  from = exports.resolve(from).substr(1);\n  to = exports.resolve(to).substr(1);\n\n  function trim(arr) {\n    var start = 0;\n    for (; start < arr.length; start++) {\n      if (arr[start] !== '') break;\n    }\n\n    var end = arr.length - 1;\n    for (; end >= 0; end--) {\n      if (arr[end] !== '') break;\n    }\n\n    if (start > end) return [];\n    return arr.slice(start, end - start + 1);\n  }\n\n  var fromParts = trim(from.split('/'));\n  var toParts = trim(to.split('/'));\n\n  var length = Math.min(fromParts.length, toParts.length);\n  var samePartsLength = length;\n  for (var i = 0; i < length; i++) {\n    if (fromParts[i] !== toParts[i]) {\n      samePartsLength = i;\n      break;\n    }\n  }\n\n  var outputParts = [];\n  for (var i = samePartsLength; i < fromParts.length; i++) {\n    outputParts.push('..');\n  }\n\n  outputParts = outputParts.concat(toParts.slice(samePartsLength));\n\n  return outputParts.join('/');\n};\n\nexports.sep = '/';\nexports.delimiter = ':';\n\nexports.dirname = function (path) {\n  if (typeof path !== 'string') path = path + '';\n  if (path.length === 0) return '.';\n  var code = path.charCodeAt(0);\n  var hasRoot = code === 47 /*/*/;\n  var end = -1;\n  var matchedSlash = true;\n  for (var i = path.length - 1; i >= 1; --i) {\n    code = path.charCodeAt(i);\n    if (code === 47 /*/*/) {\n        if (!matchedSlash) {\n          end = i;\n          break;\n        }\n      } else {\n      // We saw the first non-path separator\n      matchedSlash = false;\n    }\n  }\n\n  if (end === -1) return hasRoot ? '/' : '.';\n  if (hasRoot && end === 1) {\n    // return '//';\n    // Backwards-compat fix:\n    return '/';\n  }\n  return path.slice(0, end);\n};\n\nfunction basename(path) {\n  if (typeof path !== 'string') path = path + '';\n\n  var start = 0;\n  var end = -1;\n  var matchedSlash = true;\n  var i;\n\n  for (i = path.length - 1; i >= 0; --i) {\n    if (path.charCodeAt(i) === 47 /*/*/) {\n        // If we reached a path separator that was not part of a set of path\n        // separators at the end of the string, stop now\n        if (!matchedSlash) {\n          start = i + 1;\n          break;\n        }\n      } else if (end === -1) {\n      // We saw the first non-path separator, mark this as the end of our\n      // path component\n      matchedSlash = false;\n      end = i + 1;\n    }\n  }\n\n  if (end === -1) return '';\n  return path.slice(start, end);\n}\n\n// Uses a mixed approach for backwards-compatibility, as ext behavior changed\n// in new Node.js versions, so only basename() above is backported here\nexports.basename = function (path, ext) {\n  var f = basename(path);\n  if (ext && f.substr(-1 * ext.length) === ext) {\n    f = f.substr(0, f.length - ext.length);\n  }\n  return f;\n};\n\nexports.extname = function (path) {\n  if (typeof path !== 'string') path = path + '';\n  var startDot = -1;\n  var startPart = 0;\n  var end = -1;\n  var matchedSlash = true;\n  // Track the state of characters (if any) we see before our first dot and\n  // after any path separator we find\n  var preDotState = 0;\n  for (var i = path.length - 1; i >= 0; --i) {\n    var code = path.charCodeAt(i);\n    if (code === 47 /*/*/) {\n        // If we reached a path separator that was not part of a set of path\n        // separators at the end of the string, stop now\n        if (!matchedSlash) {\n          startPart = i + 1;\n          break;\n        }\n        continue;\n      }\n    if (end === -1) {\n      // We saw the first non-path separator, mark this as the end of our\n      // extension\n      matchedSlash = false;\n      end = i + 1;\n    }\n    if (code === 46 /*.*/) {\n        // If this is our first dot, mark it as the start of our extension\n        if (startDot === -1)\n          startDot = i;\n        else if (preDotState !== 1)\n          preDotState = 1;\n    } else if (startDot !== -1) {\n      // We saw a non-dot and non-path separator before our dot, so we should\n      // have a good chance at having a non-empty extension\n      preDotState = -1;\n    }\n  }\n\n  if (startDot === -1 || end === -1 ||\n      // We saw a non-dot character immediately before the dot\n      preDotState === 0 ||\n      // The (right-most) trimmed path component is exactly '..'\n      preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {\n    return '';\n  }\n  return path.slice(startDot, end);\n};\n\nfunction filter (xs, f) {\n    if (xs.filter) return xs.filter(f);\n    var res = [];\n    for (var i = 0; i < xs.length; i++) {\n        if (f(xs[i], i, xs)) res.push(xs[i]);\n    }\n    return res;\n}\n\n// String.prototype.substr - negative index don't work in IE8\nvar substr = 'ab'.substr(-1) === 'b'\n    ? function (str, start, len) { return str.substr(start, len) }\n    : function (str, start, len) {\n        if (start < 0) start = str.length + start;\n        return str.substr(start, len);\n    }\n;\n\n/* WEBPACK VAR INJECTION */}.call(this, __webpack_require__(/*! ./../process/browser.js */ \"./node_modules/process/browser.js\")))\n\n//# sourceURL=webpack:///./node_modules/path-browserify/index.js?");
 
 /***/ }),
 
@@ -2972,14 +2779,14 @@ eval("module.exports = function(module) {\n\tif (!module.webpackPolyfill) {\n\t\
 
 /***/ }),
 
-/***/ "./src/misc/jb-jison.js":
-/*!******************************!*\
-  !*** ./src/misc/jb-jison.js ***!
-  \******************************/
+/***/ "./src/misc/pack-jison.js":
+/*!********************************!*\
+  !*** ./src/misc/pack-jison.js ***!
+  \********************************/
 /*! no static exports found */
 /***/ (function(module, exports, __webpack_require__) {
 
-eval("jb.jisonParser = __webpack_require__(/*! jison */ \"./node_modules/jison/lib/jison.js\");\n\n//# sourceURL=webpack:///./src/misc/jb-jison.js?");
+eval("jb.jisonParser = __webpack_require__(/*! jison */ \"./node_modules/jison/lib/jison.js\");\n\n//# sourceURL=webpack:///./src/misc/pack-jison.js?");
 
 /***/ })
 
@@ -3043,7 +2850,7 @@ jb.component('lexer.tokens', {
       [ ('()[]{}+-*/%'.indexOf(x) == -1 ? x : `\\${x}`) ,`return '${x}';`])
 })
 
-jb.component('lexer.ignore-white-space', {
+jb.component('lexer.ignoreWhiteSpace', {
   type: 'lexer-rule',
   impl: ctx => ['\\s+','']
 })
@@ -3066,7 +2873,7 @@ jb.component('lexer.EOF', {
   impl: ctx => ["$","return 'EOF';"]
 })
 
-jb.component('lexer-rule', {
+jb.component('lexerRule', {
   type: 'lexer-rule',
   params: [
     { id: 'regex', as: 'string', mandatory: true, description: '[a-f0-9]+'},
@@ -3075,7 +2882,7 @@ jb.component('lexer-rule', {
   impl: (ctx,regex,result) => [regex,result]
 })
 
-jb.component('bnf-expression', {
+jb.component('bnfExpression', {
   type: 'bnf-expression', //singleInType: true,
   params: [
     { id: 'id', as: 'string', mandatory: true},
@@ -3084,7 +2891,7 @@ jb.component('bnf-expression', {
   impl: ctx => ({ id: ctx.params.id, options: ctx.params.options.filter(x=>x) })
 })
 
-jb.component('expression-option', {
+jb.component('expressionOption', {
   type: 'expression-option', //singleInType: true,
   params: [
     { id: 'syntax', as: 'string', mandatory: true, description: 'e + e'},
@@ -3120,43 +2927,18 @@ jb.stringWithSourceRef.prototype.trim = function() {
 
 jb.jstypes['string-with-source-ref'] = v => v;
 
-jb.component('extract-text', { /* extractText */
+jb.component('extractText', {
   description: 'text breaking according to begin/end markers',
   params: [
     {id: 'text', as: 'string-with-source-ref', defaultValue: '%%'},
-    {id: 'startMarkers', as: 'array', mandatory: true},
+    {id: 'startMarkers', type: 'data[]', as: 'array', mandatory: true},
     {id: 'endMarker', as: 'string'},
-    {
-      id: 'includingStartMarker',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'include the marker at part of the result'
-    },
-    {
-      id: 'includingEndMarker',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'include the marker at part of the result'
-    },
-    {
-      id: 'repeating',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'apply the markers repeatingly'
-    },
+    {id: 'includingStartMarker', as: 'boolean', type: 'boolean', description: 'include the marker at part of the result'},
+    {id: 'includingEndMarker', as: 'boolean', type: 'boolean', description: 'include the marker at part of the result'},
+    {id: 'repeating', as: 'boolean', type: 'boolean', description: 'apply the markers repeatingly'},
     {id: 'noTrim', as: 'boolean', type: 'boolean'},
-    {
-      id: 'useRegex',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'use regular expression in markers'
-    },
-    {
-      id: 'exclude',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'return the inverse result. E.g. exclude remarks'
-    }
+    {id: 'useRegex', as: 'boolean', type: 'boolean', description: 'use regular expression in markers'},
+    {id: 'exclude', as: 'boolean', type: 'boolean', description: 'return the inverse result. E.g. exclude remarks'}
   ],
   impl: (ctx,textRef,startMarkers,endMarker,includingStartMarker,includingEndMarker,repeating,noTrim,regex,exclude) => {
     const text = jb.tostring(textRef);
@@ -3196,7 +2978,7 @@ jb.component('extract-text', { /* extractText */
 
     let out = { match: [], unmatch: []},pos =0,start=null;
     while(start = findStartMarkers(pos)) {
-        const end = endMarker ? findMarker(endMarker,start.end) : findStartMarkers(start.end)
+        let end = endMarker ? findMarker(endMarker,start.end) : findStartMarkers(start.end)
         if (!end) // if end not found use end of text
           end = { pos : text.length, end: text.length }
         const start_match = includingStartMarker ? start.pos : start.end;
@@ -3216,23 +2998,12 @@ jb.component('extract-text', { /* extractText */
   }
 })
 
-jb.component('break-text', { /* breakText */
+jb.component('breakText', {
   description: 'recursive text breaking according to multi level separators',
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'},
-    {
-      id: 'separators',
-      as: 'array',
-      mandatory: true,
-      defaultValue: [],
-      description: 'multi level separators'
-    },
-    {
-      id: 'useRegex',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'use regular expression in separators'
-    }
+    {id: 'separators', as: 'array', mandatory: true, defaultValue: [], description: 'multi level separators'},
+    {id: 'useRegex', as: 'boolean', type: 'boolean', description: 'use regular expression in separators'}
   ],
   impl: (ctx,text,separators,regex) => {
 	  let findMarker = (text,marker, startpos) => {
@@ -3281,7 +3052,8 @@ jb.component('break-text', { /* breakText */
 })
 
 
-jb.component('zip-arrays', { /* zipArrays */
+jb.component('zipArrays', {
+  type: 'data',
   description: '[[1,2],[10,20],[100,200]] => [[1,10,100],[2,20,200]]',
   params: [
     {id: 'value', description: 'array of arrays', as: 'array', mandatory: true}
@@ -3291,7 +3063,7 @@ jb.component('zip-arrays', { /* zipArrays */
       value.map(line=>line[i]))
 })
 
-jb.component('remove-sections', { /* removeSections */
+jb.component('removeSections', {
   description: 'remove sections between markers',
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'},
@@ -3319,7 +3091,7 @@ jb.component('remove-sections', { /* removeSections */
   }
 })
 
-jb.component('merge', { /* merge */
+jb.component('merge', {
   type: 'data',
   description: 'assign, merge object properties',
   params: [
@@ -3329,7 +3101,7 @@ jb.component('merge', { /* merge */
 		Object.assign.apply({},objects)
 })
 
-jb.component('dynamic-object', { /* dynamicObject */
+jb.component('dynamicObject', {
   type: 'data',
   description: 'process items into object properties',
   params: [
@@ -3338,10 +3110,10 @@ jb.component('dynamic-object', { /* dynamicObject */
     {id: 'value', mandatory: true, dynamic: true}
   ],
   impl: (ctx,items,name,value) =>
-    items.reduce((obj,item)=>Object.assign(obj,jb.obj(name(ctx.setData(item)),value(ctx.setData(item)))),{})
+    items.reduce((obj,item)=>({ ...obj, [name(ctx.setData(item))]: value(ctx.setData(item)) }),{})
 })
 
-jb.component('filter-empty-properties', { /* filterEmptyProperties */
+jb.component('filterEmptyProperties', {
   type: 'data',
   description: 'remove null or empty string properties',
   params: [
@@ -3357,14 +3129,14 @@ jb.component('filter-empty-properties', { /* filterEmptyProperties */
   }
 })
 
-jb.component('trim', { /* trim */
+jb.component('trim', {
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'}
   ],
   impl: (ctx,text) => text.trim()
 })
 
-jb.component('remove-prefix-regex', { /* removePrefixRegex */
+jb.component('removePrefixRegex', {
   params: [
     {id: 'prefix', as: 'string', mandatory: true},
     {id: 'text', as: 'string', defaultValue: '%%'}
@@ -3373,28 +3145,28 @@ jb.component('remove-prefix-regex', { /* removePrefixRegex */
     text.replace(new RegExp('^'+prefix) ,'')
 })
 
-jb.component('wrap-as-object-with-array', { /* wrapAsObjectWithArray */
-  type: 'aggregator',
-  description: 'put all items in an array, wrapped by an object',
-  params: [
-    {id: 'arrayProperty', as: 'string', defaultValue: 'items'},
-    {id: 'items', as: 'array', defaultValue: '%%'}
-  ],
-  impl: (ctx,prop,items) =>
-      jb.obj(prop,items)
-})
-
-jb.component('wrap-as-object', { /* wrapAsObject */
-  description: 'put each item in a property',
+jb.component('wrapAsObject', {
+  description: 'object from entries, map each item as a property',
   type: 'aggregator',
   params: [
-    {id: 'itemToPropName', as: 'string', dynamic: true, mandatory: true},
+    {id: 'propertyName', as: 'string', dynamic: true, mandatory: true},
+    {id: 'value', as: 'string', dynamic: true, defaultValue: '%%'},
     {id: 'items', as: 'array', defaultValue: '%%'}
   ],
-  impl: (ctx,key,items) => {
+  impl: (ctx,key,value,items) => {
     let out = {}
-    items.forEach(item=>out[jb.tostring(key(ctx.setData(item)))] = item)
+    items.forEach(item=>out[jb.tostring(key(ctx.setData(item)))] = value(ctx.setData(item)))
     return out;
   }
+})
+
+jb.component('writeValueAsynch', {
+  type: 'action',
+  params: [
+    {id: 'to', as: 'ref', mandatory: true},
+    {id: 'value', mandatory: true}
+  ],
+  impl: (ctx,to,value) =>
+		Promise.resolve(jb.val(value)).then(val=>jb.writeValue(to,val,ctx))
 });
 

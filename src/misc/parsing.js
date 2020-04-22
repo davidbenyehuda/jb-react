@@ -24,43 +24,18 @@ jb.stringWithSourceRef.prototype.trim = function() {
 
 jb.jstypes['string-with-source-ref'] = v => v;
 
-jb.component('extract-text', { /* extractText */
+jb.component('extractText', {
   description: 'text breaking according to begin/end markers',
   params: [
     {id: 'text', as: 'string-with-source-ref', defaultValue: '%%'},
-    {id: 'startMarkers', as: 'array', mandatory: true},
+    {id: 'startMarkers', type: 'data[]', as: 'array', mandatory: true},
     {id: 'endMarker', as: 'string'},
-    {
-      id: 'includingStartMarker',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'include the marker at part of the result'
-    },
-    {
-      id: 'includingEndMarker',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'include the marker at part of the result'
-    },
-    {
-      id: 'repeating',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'apply the markers repeatingly'
-    },
+    {id: 'includingStartMarker', as: 'boolean', type: 'boolean', description: 'include the marker at part of the result'},
+    {id: 'includingEndMarker', as: 'boolean', type: 'boolean', description: 'include the marker at part of the result'},
+    {id: 'repeating', as: 'boolean', type: 'boolean', description: 'apply the markers repeatingly'},
     {id: 'noTrim', as: 'boolean', type: 'boolean'},
-    {
-      id: 'useRegex',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'use regular expression in markers'
-    },
-    {
-      id: 'exclude',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'return the inverse result. E.g. exclude remarks'
-    }
+    {id: 'useRegex', as: 'boolean', type: 'boolean', description: 'use regular expression in markers'},
+    {id: 'exclude', as: 'boolean', type: 'boolean', description: 'return the inverse result. E.g. exclude remarks'}
   ],
   impl: (ctx,textRef,startMarkers,endMarker,includingStartMarker,includingEndMarker,repeating,noTrim,regex,exclude) => {
     const text = jb.tostring(textRef);
@@ -100,7 +75,7 @@ jb.component('extract-text', { /* extractText */
 
     let out = { match: [], unmatch: []},pos =0,start=null;
     while(start = findStartMarkers(pos)) {
-        const end = endMarker ? findMarker(endMarker,start.end) : findStartMarkers(start.end)
+        let end = endMarker ? findMarker(endMarker,start.end) : findStartMarkers(start.end)
         if (!end) // if end not found use end of text
           end = { pos : text.length, end: text.length }
         const start_match = includingStartMarker ? start.pos : start.end;
@@ -120,23 +95,12 @@ jb.component('extract-text', { /* extractText */
   }
 })
 
-jb.component('break-text', { /* breakText */
+jb.component('breakText', {
   description: 'recursive text breaking according to multi level separators',
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'},
-    {
-      id: 'separators',
-      as: 'array',
-      mandatory: true,
-      defaultValue: [],
-      description: 'multi level separators'
-    },
-    {
-      id: 'useRegex',
-      as: 'boolean',
-      type: 'boolean',
-      description: 'use regular expression in separators'
-    }
+    {id: 'separators', as: 'array', mandatory: true, defaultValue: [], description: 'multi level separators'},
+    {id: 'useRegex', as: 'boolean', type: 'boolean', description: 'use regular expression in separators'}
   ],
   impl: (ctx,text,separators,regex) => {
 	  let findMarker = (text,marker, startpos) => {
@@ -185,7 +149,8 @@ jb.component('break-text', { /* breakText */
 })
 
 
-jb.component('zip-arrays', { /* zipArrays */
+jb.component('zipArrays', {
+  type: 'data',
   description: '[[1,2],[10,20],[100,200]] => [[1,10,100],[2,20,200]]',
   params: [
     {id: 'value', description: 'array of arrays', as: 'array', mandatory: true}
@@ -195,7 +160,7 @@ jb.component('zip-arrays', { /* zipArrays */
       value.map(line=>line[i]))
 })
 
-jb.component('remove-sections', { /* removeSections */
+jb.component('removeSections', {
   description: 'remove sections between markers',
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'},
@@ -223,7 +188,7 @@ jb.component('remove-sections', { /* removeSections */
   }
 })
 
-jb.component('merge', { /* merge */
+jb.component('merge', {
   type: 'data',
   description: 'assign, merge object properties',
   params: [
@@ -233,7 +198,7 @@ jb.component('merge', { /* merge */
 		Object.assign.apply({},objects)
 })
 
-jb.component('dynamic-object', { /* dynamicObject */
+jb.component('dynamicObject', {
   type: 'data',
   description: 'process items into object properties',
   params: [
@@ -242,10 +207,10 @@ jb.component('dynamic-object', { /* dynamicObject */
     {id: 'value', mandatory: true, dynamic: true}
   ],
   impl: (ctx,items,name,value) =>
-    items.reduce((obj,item)=>Object.assign(obj,jb.obj(name(ctx.setData(item)),value(ctx.setData(item)))),{})
+    items.reduce((obj,item)=>({ ...obj, [name(ctx.setData(item))]: value(ctx.setData(item)) }),{})
 })
 
-jb.component('filter-empty-properties', { /* filterEmptyProperties */
+jb.component('filterEmptyProperties', {
   type: 'data',
   description: 'remove null or empty string properties',
   params: [
@@ -261,14 +226,14 @@ jb.component('filter-empty-properties', { /* filterEmptyProperties */
   }
 })
 
-jb.component('trim', { /* trim */
+jb.component('trim', {
   params: [
     {id: 'text', as: 'string', defaultValue: '%%'}
   ],
   impl: (ctx,text) => text.trim()
 })
 
-jb.component('remove-prefix-regex', { /* removePrefixRegex */
+jb.component('removePrefixRegex', {
   params: [
     {id: 'prefix', as: 'string', mandatory: true},
     {id: 'text', as: 'string', defaultValue: '%%'}
@@ -277,27 +242,27 @@ jb.component('remove-prefix-regex', { /* removePrefixRegex */
     text.replace(new RegExp('^'+prefix) ,'')
 })
 
-jb.component('wrap-as-object-with-array', { /* wrapAsObjectWithArray */
-  type: 'aggregator',
-  description: 'put all items in an array, wrapped by an object',
-  params: [
-    {id: 'arrayProperty', as: 'string', defaultValue: 'items'},
-    {id: 'items', as: 'array', defaultValue: '%%'}
-  ],
-  impl: (ctx,prop,items) =>
-      jb.obj(prop,items)
-})
-
-jb.component('wrap-as-object', { /* wrapAsObject */
-  description: 'put each item in a property',
+jb.component('wrapAsObject', {
+  description: 'object from entries, map each item as a property',
   type: 'aggregator',
   params: [
-    {id: 'itemToPropName', as: 'string', dynamic: true, mandatory: true},
+    {id: 'propertyName', as: 'string', dynamic: true, mandatory: true},
+    {id: 'value', as: 'string', dynamic: true, defaultValue: '%%'},
     {id: 'items', as: 'array', defaultValue: '%%'}
   ],
-  impl: (ctx,key,items) => {
+  impl: (ctx,key,value,items) => {
     let out = {}
-    items.forEach(item=>out[jb.tostring(key(ctx.setData(item)))] = item)
+    items.forEach(item=>out[jb.tostring(key(ctx.setData(item)))] = value(ctx.setData(item)))
     return out;
   }
+})
+
+jb.component('writeValueAsynch', {
+  type: 'action',
+  params: [
+    {id: 'to', as: 'ref', mandatory: true},
+    {id: 'value', mandatory: true}
+  ],
+  impl: (ctx,to,value) =>
+		Promise.resolve(jb.val(value)).then(val=>jb.writeValue(to,val,ctx))
 })

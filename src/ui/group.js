@@ -1,184 +1,115 @@
-jb.ns('layout')
-jb.ns('tabs')
+jb.ns('group,layout,tabs')
 
-jb.component('group', { /* group */
+jb.component('group', {
   type: 'control',
   category: 'group:100,common:90',
   params: [
     {id: 'title', as: 'string', dynamic: true},
-    {
-      id: 'style',
-      type: 'group.style',
-      defaultValue: layout.vertical(),
-      mandatory: true,
-      dynamic: true
-    },
-    {
-      id: 'controls',
-      type: 'control[]',
-      mandatory: true,
-      flattenArray: true,
-      dynamic: true,
-      composite: true
-    },
+    {id: 'layout', type: 'layout'},
+    {id: 'style', type: 'group.style', defaultValue: group.div(), mandatory: true, dynamic: true},
+    {id: 'controls', type: 'control[]', mandatory: true, flattenArray: true, dynamic: true, composite: true},
     {id: 'features', type: 'feature[]', dynamic: true}
   ],
-  impl: ctx =>
-    jb.ui.ctrl(ctx)
+  impl: ctx => jb.ui.ctrl(ctx, ctx.params.layout)
 })
 
-jb.component('group.init-group', { /* group.initGroup */
+jb.component('group.initGroup', {
   type: 'feature',
   category: 'group:0',
-  impl: ctx => ({
-    init: cmp => {
-      cmp.calcCtrls = cmp.calcCtrls || (_ =>
-        ctx.vars.$model.controls(cmp.ctx).map(c=>jb.ui.renderable(c)).filter(x=>x))
-      if (!cmp.state.ctrls)
-        cmp.state.ctrls = cmp.calcCtrls()
-      cmp.refresh = cmp.refresh || (_ =>
-          cmp.setState({ctrls: cmp.calcCtrls() }))
-
-      if (cmp.ctrlEmitter)
-        cmp.ctrlEmitter.subscribe(ctrls=>
-              jb.ui.setState(cmp,{ctrls:ctrls.map(c=>jb.ui.renderable(c)).filter(x=>x)},null,ctx))
-    }
+  impl: calcProp({
+    id: 'ctrls',
+    value: '%$$model.controls%'
   })
 })
 
-jb.component('inline-controls', { /* inlineControls */
+jb.component('inlineControls', {
   type: 'control',
+  description: 'controls without a wrapping group',
   params: [
-    {
-      id: 'controls',
-      type: 'control[]',
-      mandatory: true,
-      flattenArray: true,
-      dynamic: true,
-      composite: true
-    }
+    {id: 'controls', type: 'control[]', mandatory: true, flattenArray: true, dynamic: true, composite: true}
   ],
   impl: ctx => ctx.params.controls().filter(x=>x)
 })
 
-jb.component('dynamic-controls', { /* dynamicControls */
+jb.component('dynamicControls', {
   type: 'control',
+  description: 'calculated controls by data items without a wrapping group',
   params: [
     {id: 'controlItems', type: 'data', as: 'array', mandatory: true, dynamic: true},
     {id: 'genericControl', type: 'control', mandatory: true, dynamic: true},
-    {id: 'itemVariable', as: 'string', defaultValue: 'controlItem'}
+    {id: 'itemVariable', as: 'string', defaultValue: 'controlItem'},
+    {id: 'indexVariable', as: 'string'}
   ],
-  impl: (context,controlItems,genericControl,itemVariable) =>
-    controlItems()
-      .map(jb.ui.cachedMap(controlItem => jb.tosingle(genericControl(
-        new jb.jbCtx(context,{data: controlItem, vars: jb.obj(itemVariable,controlItem)})))
-      ))
+  impl: (ctx,controlItems,genericControl,itemVariable,indexVariable) => (controlItems() || [])
+      .map((controlItem,i) => jb.tosingle(genericControl(
+        ctx.setVar(itemVariable,controlItem).setVar(indexVariable,i).setData(controlItem))))
 })
 
-jb.component('group.dynamic-titles', { /* group.dynamicTitles */
+jb.component('group.firstSucceeding', {
   type: 'feature',
-  category: 'group:30',
-  description: 'dynamic titles for sub controls',
-  impl: ctx => ({
-    componentWillUpdate: cmp =>
-      (cmp.state.ctrls || []).forEach(ctrl=>
-        ctrl.title = ctrl.jbComp.field.title ? ctrl.jbComp.field.title() : '')
-  })
-})
-
-jb.component('control.first-succeeding', { /* control.firstSucceeding */
-  type: 'control',
-  category: 'common:30',
-  params: [
-    {
-      id: 'controls',
-      type: 'control[]',
-      mandatory: true,
-      flattenArray: true,
-      dynamic: true,
-      composite: true
-    },
-    {id: 'title', as: 'string', dynamic: true},
-  {
-      id: 'style',
-      type: 'first-succeeding.style',
-      defaultValue: firstSucceeding.style(),
-      mandatory: true,
-      dynamic: true
-    },
-    {id: 'features', type: 'feature[]', dynamic: true}
-  ],
-  impl: ctx => jb.ui.ctrl(new jb.jbCtx(ctx,{params: Object.assign({},ctx.params,{
-      originalControls: ctx.profile.controls,
-      controls: ctx2 => {
-        try {
-          for(let i=0;i<ctx.profile.controls.length;i++) {
-            const res = ctx2.runInner(ctx.profile.controls[i],null,i)
-            if (res) {
-              res.firstSucceedingIndex = i;
-              return [res]
-            }
-          }
-          return []
-        } catch(e) {
-          return []
-        }
-      }
-    })}))
-})
-
-jb.component('first-succeeding.watch-refresh-on-ctrl-change', { /* firstSucceeding.watchRefreshOnCtrlChange */
-  type: 'feature',
-  category: 'watch:30',
-  description: 'relevant only for first-succeeding',
-  params: [
-    {
-      id: 'ref',
-      mandatory: true,
-      as: 'ref',
-      dynamic: true,
-      description: 'reference to data'
-    },
-    {
-      id: 'includeChildren',
-      as: 'boolean',
-      description: 'watch childern change as well',
-      type: 'boolean'
-    }
-  ],
-  impl: (ctx,refF,includeChildren) => ({
-      init: cmp => {
-        const ref = refF(cmp.ctx)
-        ref && jb.ui.refObservable(ref,cmp,{includeChildren, watchScript: ctx})
-        .subscribe(e=>{
-          if (ctx && ctx.profile && ctx.profile.$trace)
-            console.log('ref change watched: ' + (ref && ref.path && ref.path().join('~')),e,cmp,ref,ctx);
-
-          const originalControls = ctx.vars.$model.originalControls
-          if (!originalControls) return
-          for(let i=0;i<(originalControls ||[]).length;i++) {
-            const res = cmp.ctx.runInner(originalControls[i],null,i)
-            if (res) {
-              if (cmp.state.ctrls[0].jbComp.firstSucceedingIndex !== i) {
-                res.firstSucceedingIndex = i
-                jb.ui.setState(cmp,{ctrls: [jb.ui.renderable(res)]},e,ctx);
-              }
-              return
-            }
-          }
+  category: 'group:70',
+  description: 'Used with controlWithCondition. Takes the fhe first succeeding control',
+  impl: features(
+    () => ({calcHash: ctx => jb.asArray(ctx.vars.$model.controls.profile).reduce((res,prof,i) => {
+        if (res) return res
+        const found = prof.condition == undefined || ctx.vars.$model.ctx.setVars(ctx.vars).runInner(prof.condition,{ as: 'boolean'},`controls.${i}.condition`)
+        if (found)
+          return i + 1 // avoid index 0
+      }, null),
+    }),
+    calcProp({
+        id: 'ctrls',
+        value: ctx => {
+      const index = ctx.vars.$props.cmpHash-1
+      if (isNaN(index)) return []
+      const prof = jb.asArray(ctx.vars.$model.controls.profile)[index]
+      return [ctx.vars.$model.ctx.setVars(ctx.vars).runInner(prof,{type: 'control'},`controls.${index}`)]
+     },
+        priority: 5
       })
-    }
-  })
+  )
 })
 
-jb.component('control-with-condition', { /* controlWithCondition */
+jb.component('controlWithCondition', {
   type: 'control',
-  usageByValue: true,
+  description: 'Used with group.firstSucceeding',
+  category: 'group:10',
+  macroByValue: true,
   params: [
     {id: 'condition', type: 'boolean', dynamic: true, mandatory: true, as: 'boolean'},
     {id: 'control', type: 'control', mandatory: true, dynamic: true},
     {id: 'title', as: 'string'}
   ],
-  impl: (ctx,condition,ctrl) =>
-    condition() && ctrl(ctx)
+  impl: (ctx,condition,ctrl) => condition(ctx) && ctrl(ctx)
+})
+
+jb.component('group.wait', {
+  type: 'feature',
+  category: 'group:70',
+  description: 'wait for asynch data before showing the control',
+  params: [
+    {id: 'for', mandatory: true, dynamic: true},
+    {id: 'loadingControl', type: 'control', defaultValue: text('loading ...'), dynamic: true},
+    {id: 'error', type: 'control', defaultValue: text('error: %$error%'), dynamic: true},
+    {id: 'varName', as: 'string'}
+  ],
+  impl: features(
+    calcProp({
+        id: 'ctrls',
+        value: (ctx,{cmp},{loadingControl,error}) => {
+        const ctrl = cmp.state.error ? error() : loadingControl(ctx)
+        return cmp.ctx.profile.$ == 'itemlist' ? [[ctrl]] : [ctrl]
+      },
+        priority: ctx => jb.path(ctx.vars.$state,'dataArrived') ? 0: 10
+      }),
+    interactive(
+        (ctx,{cmp},{varName}) => !cmp.state.dataArrived && !cmp.state.error &&
+      Promise.resolve(ctx.componentContext.params.for()).then(data =>
+          cmp.refresh({ dataArrived: true }, {
+            srcCtx: ctx.componentContext,
+            extendCtx: ctx => ctx.setVar(varName,data).setData(data)
+          }))
+          .catch(e=> cmp.refresh({error: JSON.stringify(e)}))
+      )
+  )
 })

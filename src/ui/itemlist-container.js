@@ -1,4 +1,5 @@
 (function() {
+jb.ns('search')
 
 const createItemlistCntr = (ctx,params) => ({
 	id: params.id,
@@ -9,7 +10,7 @@ const createItemlistCntr = (ctx,params) => ({
 	selected: function(selected) {
 		if (!jb.isValid(this.selectedRef)) return;
 		return (typeof selected != 'undefined') ?
-			jb.writeValue(this.selectedRef,selected,this.ctx) : jb.val(this.selectedRef)
+			jb.writeValue(this.selectedRef,selected,ctx) : jb.val(this.selectedRef)
 	},
 	reSelectAfterFilter: function(filteredItems) {
 		if (filteredItems.indexOf(this.selected()) == -1)
@@ -30,70 +31,45 @@ const createItemlistCntr = (ctx,params) => ({
 	}
 })
 
-jb.component('group.itemlist-container', { /* group.itemlistContainer */
+jb.component('group.itemlistContainer', {
   description: 'itemlist writable container to support addition, deletion and selection',
   type: 'feature',
   category: 'itemlist:80,group:70',
   params: [
     {id: 'id', as: 'string', mandatory: true},
     {id: 'defaultItem', as: 'single'},
-    {id: 'maxItems', as: 'number', defaultValue: 100},
     {id: 'initialSelection', as: 'single'}
   ],
-  impl: list(
+  impl: features(
     variable({
         name: 'itemlistCntrData',
-        value: {
-          '$': 'object',
-          search_pattern: '',
-          selected: '%$initialSelection%',
-          maxItems: '%$maxItems%'
-        },
+        value: {'$': 'object', search_pattern: '', selected: '%$initialSelection%'},
         watchable: true
       }),
     variable({
         name: 'itemlistCntr',
         value: ctx => createItemlistCntr(ctx,ctx.componentContext.params)
-      }),
-    ctx => ({
-			init: cmp => {
-				const maxItemsRef = cmp.ctx.exp('%$itemlistCntrData/maxItems%','ref');
-//        jb.writeValue(maxItemsRef,ctx.componentContext.params.maxItems);
-				cmp.ctx.vars.itemlistCntr.maxItemsFilter = items =>
-					items.slice(0,jb.tonumber(maxItemsRef));
-			},
-		})
+      })
   )
 })
 
-jb.component('itemlist.itemlist-selected', { /* itemlist.itemlistSelected */
-  type: 'feature',
-  category: 'itemlist:20,group:0',
-  impl: list(
-    group.data('%$itemlistCntrData/selected%'),
-    hidden(notEmpty('%$itemlistCntrData/selected%'))
-  )
-})
-
-jb.component('itemlist-container.filter', { /* itemlistContainer.filter */
+jb.component('itemlistContainer.filter', {
   type: 'aggregator',
   category: 'itemlist-filter:100',
   requires: ctx => ctx.vars.itemlistCntr,
   params: [
-    {id: 'updateCounters', as: 'boolean', type: 'boolean'}
+    {id: 'updateCounters', as: 'boolean'},
   ],
   impl: (ctx,updateCounters) => {
 			if (!ctx.vars.itemlistCntr) return;
-			const resBeforeMaxFilter = ctx.vars.itemlistCntr.filters.reduce((items,filter) =>
-									filter(items), ctx.data || []);
-			const res = ctx.vars.itemlistCntr.maxItemsFilter(resBeforeMaxFilter);
+			const res = ctx.vars.itemlistCntr.filters.reduce((items,filter) => filter(items), ctx.data || []);
 			if (ctx.vars.itemlistCntrData.countAfterFilter != res.length)
 				jb.delay(1).then(_=>ctx.vars.itemlistCntr.reSelectAfterFilter(res));
-			if (updateCounters) {
+			if (updateCounters) { // use merge
 					jb.delay(1).then(_=>{
-					jb.writeValue(ctx.exp('%$itemlistCntrData/countBeforeFilter%','ref'),(ctx.data || []).length);
-					jb.writeValue(ctx.exp('%$itemlistCntrData/countBeforeMaxFilter%','ref'),resBeforeMaxFilter.length);
-					jb.writeValue(ctx.exp('%$itemlistCntrData/countAfterFilter%','ref'),res.length);
+					jb.writeValue(ctx.exp('%$itemlistCntrData/countBeforeFilter%','ref'),(ctx.data || []).length, ctx);
+					jb.writeValue(ctx.exp('%$itemlistCntrData/countBeforeMaxFilter%','ref'),resBeforeMaxFilter.length, ctx);
+					jb.writeValue(ctx.exp('%$itemlistCntrData/countAfterFilter%','ref'),res.length, ctx);
 			}) } else {
 				ctx.vars.itemlistCntrData.countAfterFilter = res.length
 			}
@@ -101,95 +77,77 @@ jb.component('itemlist-container.filter', { /* itemlistContainer.filter */
 	}
 })
 
-jb.component('itemlist-container.search', { /* itemlistContainer.search */
+jb.component('itemlistContainer.conditionFilter', {
+  type: 'boolean',
+  category: 'itemlist-filter:100',
+  requires: ctx => ctx.vars.itemlistCntr,
+  impl: ctx => ctx.vars.itemlistCntr &&
+		ctx.vars.itemlistCntr.filters.reduce((res,filter) => res && filter([ctx.data]).length, true)
+})
+
+jb.component('itemlistContainer.search', {
   type: 'control',
   category: 'itemlist-filter:100',
   requires: ctx => ctx.vars.itemlistCntr,
   params: [
     {id: 'title', as: 'string', dynamic: true, defaultValue: 'Search'},
-    {
-      id: 'searchIn',
-      as: 'string',
-      dynamic: true,
-      defaultValue: itemlistContainer.searchInAllProperties()
-    },
-    {
-      id: 'databind',
-      as: 'ref',
-      dynamic: true,
-      defaultValue: '%$itemlistCntrData/search_pattern%'
-    },
-    {
-      id: 'style',
-      type: 'editable-text.style',
-      defaultValue: editableText.mdlSearch(),
-      dynamic: true
-    },
+    {id: 'searchIn', type: 'search-in', dynamic: true, defaultValue: search.searchInAllProperties()},
+    {id: 'databind', as: 'ref', dynamic: true, defaultValue: '%$itemlistCntrData/search_pattern%'},
+    {id: 'style', type: 'editable-text.style', defaultValue: editableText.mdcSearch(), dynamic: true},
     {id: 'features', type: 'feature[]', dynamic: true}
   ],
   impl: (ctx,title,searchIn,databind) =>
 		jb.ui.ctrl(ctx,{
 			afterViewInit: cmp => {
 				if (!ctx.vars.itemlistCntr) return;
-				const databindRef = databind()
-
 				ctx.vars.itemlistCntr.filters.push( items => {
-					const toSearch = jb.val(databindRef) || '';
-					if (typeof searchIn.profile == 'function') { // improved performance
+					const toSearch = jb.val(databind()) || '';
+					if (jb.frame.Fuse && jb.path(searchIn,'profile.$') == 'search.fuse')
+						return toSearch ? new jb.frame.Fuse(items, searchIn()).search(toSearch).map(x=>x.item) : items
+					if (typeof searchIn.profile == 'function') // improved performance
 						return items.filter(item=>toSearch == '' || searchIn.profile(item).toLowerCase().indexOf(toSearch.toLowerCase()) != -1)
-					}
 
 					return items.filter(item=>toSearch == '' || searchIn(ctx.setData(item)).toLowerCase().indexOf(toSearch.toLowerCase()) != -1)
 				});
-				const keydown_src = new jb.rx.Subject();
-				cmp.base.onkeydown = e => {
-					if ([38,40,13,27].indexOf(e.keyCode) != -1) { // stop propagation for up down arrows
-						keydown_src.next(e);
-						return false;
-					}
-					return true;
-				}
-				ctx.vars.itemlistCntr.keydown = keydown_src.takeUntil(cmp.destroyed);
+				ctx.vars.itemlistCntr.keydown = jb.ui.upDownEnterEscObs(cmp)
 			}
 		})
 })
 
-jb.component('itemlist-container.more-items-button', { /* itemlistContainer.moreItemsButton */
+jb.component('itemlistContainer.moreItemsButton', {
   type: 'control',
   category: 'itemlist-filter:100',
   requires: ctx => ctx.vars.itemlistCntr,
   params: [
-    {
-      id: 'title',
-      as: 'string',
-      dynamic: true,
-      defaultValue: 'show %$delta% more ... (%$itemlistCntrData/countAfterFilter%/%$itemlistCntrData/countBeforeMaxFilter%)'
-    },
+    {id: 'title', as: 'string', dynamic: true, defaultValue: 'show %$delta% more ... (%$itemlistCntrData/countAfterFilter%/%$itemlistCntrData/countBeforeMaxFilter%)'},
     {id: 'delta', as: 'number', defaultValue: 200},
     {id: 'style', type: 'button.style', defaultValue: button.href(), dynamic: true},
     {id: 'features', type: 'feature[]', dynamic: true}
   ],
-  impl: (ctx,title,delta) => {
-		return jb.ui.ctrl(ctx,{
-			beforeInit: cmp => {
-				if (!ctx.vars.itemlistCntr) return;
-				const maxItemsRef = cmp.ctx.exp('%$itemlistCntrData/maxItems%','ref');
-				cmp.clicked = _ =>
-					jb.writeValue(maxItemsRef,jb.tonumber(maxItemsRef) + delta);
-				cmp.refresh = _ =>
-					cmp.setState({title: jb.val(ctx.params.title(cmp.ctx.setVars({delta: delta})))});
-				jb.ui.watchRef(ctx,cmp,maxItemsRef);
-			},
-			init: cmp =>
-				cmp.state.title = jb.val(ctx.params.title(cmp.ctx.setVars({delta: delta}))),
-
-			templateModifier: (vdom,cmp,state) => { // hide the button when not needed
-				if (cmp.ctx.exp('%$itemlistCntrData/countBeforeMaxFilter%','number') == cmp.ctx.exp('%$itemlistCntrData/countAfterFilter%','number'))
-					return jb.ui.h('span');
-				return vdom;
-			}
-		})
-	}
+  impl: controlWithFeatures(
+    ctx=>jb.ui.ctrl(ctx),
+    [
+      watchRef('%$itemlistCntrData/maxItems%'),
+      defHandler(
+        'onclickHandler',
+        writeValue(
+          '%$itemlistCntrData/maxItems%',
+          (ctx,{itemlistCntrData},{delta}) => delta + itemlistCntrData.maxItems
+        )
+      ),
+      calcProp({
+        id: 'title',
+        value: (ctx,{},{title,delta}) => title(ctx.setVar('delta',delta))
+      }),
+      ctx => ({
+		templateModifier: (vdom,cmp,state) => { // hide the button when not needed
+			if (cmp.ctx.exp('%$itemlistCntrData/countBeforeMaxFilter%','number') == cmp.ctx.exp('%$itemlistCntrData/countAfterFilter%','number'))
+				return '';
+			return vdom;
+		}
+	  })
+    ]
+  )
 })
 
 jb.ui.extractPropFromExpression = exp => { // performance for simple cases such as %prop1%
@@ -198,7 +156,7 @@ jb.ui.extractPropFromExpression = exp => { // performance for simple cases such 
 }
 
 // match fields in pattern itemlistCntrData/FLDNAME_filter to data
-jb.component('itemlist-container.filter-field', { /* itemlistContainer.filterField */
+jb.component('itemlistContainer.filterField', {
   type: 'feature',
   category: 'itemlist:80',
   requires: ctx => ctx.vars.itemlistCntr,
@@ -215,7 +173,7 @@ jb.component('itemlist-container.filter-field', { /* itemlistContainer.filterFie
 					cmp.itemToFilterData = item => fieldData(ctx.setData(item));
 
 				ctx.vars.itemlistCntr && ctx.vars.itemlistCntr.filters.push(items=>{
-						const filterValue = cmp.jbModel();
+						const filterValue = jb.val(ctx.vars.$model.databind());
 						if (!filterValue) return items;
 						const res = items.filter(item=>filterType.filter(filterValue,cmp.itemToFilterData(item)) );
 						if (filterType.sort && (!cmp.state.sortOptions || cmp.state.sortOptions.length == 0) )
@@ -226,7 +184,7 @@ jb.component('itemlist-container.filter-field', { /* itemlistContainer.filterFie
 	})
 })
 
-jb.component('filter-type.text', { /* filterType.text */
+jb.component('filterType.text', {
   type: 'filter-type',
   params: [
     {id: 'ignoreCase', as: 'boolean', defaultValue: true, type: 'boolean'}
@@ -248,7 +206,7 @@ jb.component('filter-type.text', { /* filterType.text */
 	})
 })
 
-jb.component('filter-type.exact-match', { /* filterType.exactMatch */
+jb.component('filterType.exactMatch', {
   type: 'filter-type',
   impl: ctx => ({
 		filter: (filter,data) =>  {
@@ -258,7 +216,7 @@ jb.component('filter-type.exact-match', { /* filterType.exactMatch */
 	})
 })
 
-jb.component('filter-type.numeric', { /* filterType.numeric */
+jb.component('filterType.numeric', {
   type: 'filter-type',
   impl: ctx => ({
 		filter: (filter,data) => Number(data) >= Number(filter),
@@ -266,9 +224,8 @@ jb.component('filter-type.numeric', { /* filterType.numeric */
 	})
 })
 
-jb.component('itemlist-container.search-in-all-properties', { /* itemlistContainer.searchInAllProperties */
-  type: 'data',
-  category: 'itemlist:40',
+jb.component('search.searchInAllProperties', {
+  type: 'search-in',
   impl: ctx => {
 		if (typeof ctx.data == 'string') return ctx.data;
 		if (typeof ctx.data != 'object') return '';
@@ -276,5 +233,23 @@ jb.component('itemlist-container.search-in-all-properties', { /* itemlistContain
 	}
 })
 
+jb.component('search.fuse', {
+	type: 'search-in',
+	description: 'fuse.js search https://fusejs.io/api/options.html#basic-options',
+	params: [
+		{ id: 'keys', as: 'array', defaultValue: list('id','name'), description: 'List of keys that will be searched. This supports nested paths, weighted search, searching in arrays of strings and objects' },
+		{ id: 'findAllMatches', as: 'boolean', defaultValue: false, description: 'When true, the matching function will continue to the end of a search pattern even if a perfect match has already been located in the string' },
+		{ id: 'isCaseSensitive', as: 'boolean', defaultValue: false },
+		{ id: 'minMatchCharLength', as: 'number', defaultValue: 1, description: 'Only the matches whose length exceeds this value will be returned. (For instance, if you want to ignore single character matches in the result, set it to 2)' },
+		{ id: 'shouldSort', as: 'boolean', defaultValue: true, description: 'Whether to sort the result list, by score' },
+		{ id: 'location', as: 'number', defaultValue: 0, description: 'Determines approximately where in the text is the pattern expected to be found' },
+		{ id: 'threshold', as: 'number', defaultValue: 0.6, description: 'At what point does the match algorithm give up. A threshold of 0.0 requires a perfect match (of both letters and location), a threshold of 1.0 would match anything' },
+		{ id: 'distance', as: 'number', defaultValue: 100, description: 'Determines how close the match must be to the fuzzy location (specified by location). An exact letter match which is distance characters away from the fuzzy location would score as a complete mismatch' },
+//		{ id: 'includeScore', as: 'boolean', defaultValue: false },
+//		{ id: 'includeMatches', as: 'boolean', defaultValue: false },
+	],
+	impl: ctx => ({ fuseOptions: true, ...ctx.params})
+})
+  
 
 })()

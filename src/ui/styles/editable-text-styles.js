@@ -1,15 +1,14 @@
-jb.component('editable-text.input', { /* editableText.input */
+jb.ns('mdc,mdc-style')
+
+jb.component('editableText.input', {
   type: 'editable-text.style',
   impl: customStyle({
-    template: (cmp,state,h) => h('input', {
-        value: state.model,
-        onchange: e => cmp.jbModel(e.target.value),
-        onkeyup: e => cmp.jbModel(e.target.value,'keyup')  }),
+    template: (cmp,{databind},h) => h('input', {value: databind, onchange: true, onkeyup: true, onblur: true }),
     features: field.databindText()
   })
 })
 
-jb.component('editable-text.textarea', { /* editableText.textarea */
+jb.component('editableText.textarea', {
   type: 'editable-text.style',
   params: [
     {id: 'rows', as: 'number', defaultValue: 4},
@@ -17,123 +16,58 @@ jb.component('editable-text.textarea', { /* editableText.textarea */
     {id: 'oneWay', type: 'boolean', as: 'boolean', defaultValue: true}
   ],
   impl: customStyle({
-    template: (cmp,state,h) => h('textarea', {
-        rows: cmp.rows, cols: cmp.cols,
-        value: state.model, onchange: e => cmp.jbModel(e.target.value), onkeyup: e => cmp.jbModel(e.target.value,'keyup')  }),
-    features: field.databindText(undefined, '%$oneWay')
+    template: (cmp,{databind,rows,cols},h) => h('textarea', {
+        rows: rows, cols: cols, value: databind, onchange: true, onkeyup: true, onblur: true  }),
+    features: field.databindText(0, '%$oneWay%')
   })
 })
 
-jb.component('editable-text.mdl-input', { /* editableText.mdlInput */
-  type: 'editable-text.style',
+jb.component('editableText.mdcInput', {
+  type: 'editable-text.style,editable-number.style',
   params: [
-    {id: 'width', as: 'number'}
+    {id: 'width', as: 'number'},
+    {id: 'noLabel', as: 'boolean'},
+    {id: 'noRipple', as: 'boolean'},
   ],
   impl: customStyle({
-    template: (cmp,state,h) => h('div',{class: ['mdl-textfield','mdl-js-textfield','mdl-textfield--floating-label',state.error ? 'is-invalid' : ''].join(' ') },[
-        h('input', { class: 'mdl-textfield__input', id: 'input_' + state.fieldId, type: 'text',
-            value: state.model,
-            onchange: e => cmp.jbModel(e.target.value),
-            onkeyup: e => cmp.jbModel(e.target.value,'keyup'),
-        }),
-        h('label',{class: 'mdl-textfield__label', for: 'input_' + state.fieldId},state.title),
-        h('span',{class: 'mdl-textfield__error' }, state.error || '')
+    template: (cmp,{databind,fieldId,title,noLabel,noRipple,error},h) => h('div',{}, [
+      h('div#mdc-text-field',{class: [ 
+          (cmp.icon||[]).filter(_cmp=>_cmp && _cmp.ctx.vars.$model.position == 'pre')[0] && 'mdc-text-field--with-leading-icon',
+          (cmp.icon||[]).filter(_cmp=>_cmp && _cmp.ctx.vars.$model.position == 'post')[0] && 'mdc-text-field--with-trailing-icon'
+        ].filter(x=>x).join(' ') },[
+          ...(cmp.icon||[]).filter(_cmp=>_cmp && _cmp.ctx.vars.$model.position == 'pre').map(h).map(vdom=>vdom.addClass('mdc-text-field__icon mdc-text-field__icon--leading')),
+          h('input#mdc-text-field__input', { type: 'text', id: 'input_' + fieldId,
+              value: databind, onchange: true, onkeyup: true, onblur: true,
+          }),
+          ...(cmp.icon||[]).filter(_cmp=>_cmp && _cmp.ctx.vars.$model.position == 'post').map(h).map(vdom=>vdom.addClass('mdc-text-field__icon mdc-text-field__icon--trailing')),
+          ...[!noLabel && h('label#mdc-floating-label', { class: databind ? 'mdc-floating-label--float-above' : '', for: 'input_' + fieldId},title() )].filter(x=>x),
+          ...[!noRipple && h('div#mdc-line-ripple')].filter(x=>x)
+        ]),
+        h('div#mdc-text-field-helper-line', {}, error || '')
       ]),
-    css: '{ {?width: %$width%px?} }',
+    css: `~ .mdc-text-field-helper-line { color: red }`,
     features: [
-      field.databindText(),
-      mdlStyle.initDynamic(),
-      ctx => ({
-            beforeInit: cmp => cmp.elemToInput = elem => elem.children[0]
-          })
+      field.databindText(), 
+      mdcStyle.initDynamic(),
+      css( ({},{},{width}) => `>.mdc-text-field { ${jb.ui.propWithUnits('width', width)} }`),
     ]
   })
 })
 
-jb.component('editable-text.mdl-input-no-floating-label', { /* editableText.mdlInputNoFloatingLabel */
+jb.component('editableText.mdcNoLabel', {
   type: 'editable-text.style',
   params: [
     {id: 'width', as: 'number'}
   ],
-  impl: customStyle({
-    template: (cmp,state,h) =>
-        h('input', { class: 'mdl-textfield__input', type: 'text',
-            value: state.model,
-            onchange: e => cmp.jbModel(e.target.value),
-            onkeyup: e => cmp.jbModel(e.target.value,'keyup'),
-        }),
-    css: '{ {?width: %$width%px?} } :focus { border-color: #3F51B5; border-width: 2px}',
-    features: [field.databindText(), mdlStyle.initDynamic()]
-  })
+  impl: editableText.mdcInput({width:'%$width%', noLabel: true})
 })
 
-jb.component('editable-text.mdl-search', { /* editableText.mdlSearch */
+jb.component('editableText.mdcSearch', {
+  params: [
+    {id: 'width', as: 'number'}
+  ],
   description: 'debounced and one way binding',
   type: 'editable-text.style',
-  impl: customStyle({
-    template: (cmp,{model, fieldId, title},h) => h('div',{class:'mdl-textfield mdl-js-textfield'},[
-        h('input', { class: 'mdl-textfield__input', id: 'search_' + fieldId, type: 'text',
-            value: model,
-            onchange: e => cmp.jbModel(e.target.value),
-            onkeyup: e => cmp.jbModel(e.target.value,'keyup'),
-        }),
-        h('label',{class: 'mdl-textfield__label', for: 'search_' + fieldId}, model ? '' : title)
-      ]),
-    features: [field.databindText(), mdlStyle.initDynamic()]
-  })
+  impl: styleWithFeatures(editableText.mdcInput({width:'%$width%', noLabel: true}), feature.icon({icon: 'search', position: 'post'}))
 })
 
-jb.component('editable-text.expandable', {
-  description: 'label that changes to editable class on double click',
-  type: 'editable-text.style',
-  params: [
-    { id: 'buttonFeatures', type: 'feature[]', flattenArray: true, dynamic: true},
-    { id: 'editableFeatures', type: 'feature[]', flattenArray: true, dynamic: true},
-    { id: 'buttonStyle', type: 'button.style' , dynamic: true, defaultValue: button.href() },
-    { id: 'editableStyle', type: 'editable-text.style', dynamic: true , defaultValue: editableText.input() },
-    { id: 'onToggle', type: 'action' , dynamic: true  }
-  ], 
-  impl:  styleByControl(control.firstSucceeding({
-    controls: [
-      controlWithCondition('%$editable%',
-        editableText({
-          databind: '%$editableTextModel/databind%',
-          updateOnBlur: true,
-          style: call('editableStyle'),
-          features: [
-            ctx => ({
-              afterViewInit: cmp => { 
-                const elem = cmp.base.matches('input,textarea') ? cmp.base : querySelector('input,textarea')
-                if (elem) {
-                  elem.onblur = () => cmp.ctx.run(runActions(
-                      toggleBooleanValue('%$editable%'),
-                      (ctx,vars,{onToggle}) => onToggle(ctx)
-                   ))
-                }
-              }
-            }),
-            (ctx,vars,{editableFeatures}) => editableFeatures(ctx),
-          ]
-        })
-      ),
-      button({
-        title: '%$editableTextModel/databind%',
-        style: call('buttonStyle'),
-        action: runActions(
-          toggleBooleanValue('%$editable%'), 
-          focusOnSibling('input'),
-          (ctx,vars,{onToggle}) => onToggle(ctx)
-        ),
-        features: (ctx,vars,{buttonFeatures}) => buttonFeatures(ctx),
-      })
-    ],
-    style: firstSucceeding.style(),
-    features: [
-      variable({name: 'editable', watchable: true}),
-      firstSucceeding.watchRefreshOnCtrlChange('%$editable%')
-    ]
-  })
-  ,
-    'editableTextModel'
-  )
-})

@@ -1,87 +1,38 @@
-jb.component('property-sheet.titles-above', { /* propertySheet.titlesAbove */
+jb.component('propertySheet.titlesLeft', {
   type: 'group.style',
   params: [
-    {id: 'spacing', as: 'number', defaultValue: 20}
+    {id: 'titleStyle', type: 'text.style', defaultValue: styleWithFeatures(text.span(), css.bold()), dynamic: true},
+    {id: 'titleText', defaultValue: '%%:', dynamic: true},
+    {id: 'spacing', as: 'string', description: 'grid-column-gap', defaultValue: '10px'}
   ],
   impl: customStyle({
-    template: (cmp,state,h) => h('div',{}, state.ctrls.map(ctrl=>
-      h('div',{ class: 'property'},[
-            h('label',{ class: 'property-title'},jb.ui.fieldTitle(cmp,ctrl,h)),
-            h(ctrl)
-    ]))),
-    css: `>.property { margin-bottom: %$spacing%px }
-      >.property:last-child { margin-bottom:0 }
-      >.property>.property-title {
-        width:100px;
-        overflow:hidden;
-        text-overflow:ellipsis;
-        vertical-align:top;
-        margin-top:2px;
-        font-size:14px;
-      }
-      >.property>div { display:inline-block }`,
+    template: (cmp,{ctrls,titleStyle,titleText},h) => h('div',{}, ctrls.flatMap(ctrl=>[
+        h(cmp.ctx.run(text({text: ctx => titleText(ctx.setData(ctrl.field().title())), style: ctx => titleStyle(ctx)}))),
+        h(ctrl)
+      ])
+    ),
+    css: '{ display: grid; grid-template-columns: auto auto; grid-column-gap:%$spacing%}',
     features: group.initGroup()
   })
 })
 
-jb.component('property-sheet.titles-above-float-left', { /* propertySheet.titlesAboveFloatLeft */
+jb.component('propertySheet.titlesAbove', {
   type: 'group.style',
   params: [
-    {id: 'spacing', as: 'number', defaultValue: 20},
-    {id: 'fieldWidth', as: 'number', defaultValue: 200}
+    {id: 'titleStyle', type: 'text.style', defaultValue: styleWithFeatures(text.span(), css.bold()), dynamic: true},
+    {id: 'titleText', defaultValue: '%%', dynamic: true},
+    {id: 'spacing', as: 'string', description: 'grid-column-gap', defaultValue: '10px'}
   ],
   impl: customStyle({
-    template: (cmp,state,h) => h('div',{ class: 'clearfix'}, state.ctrls.map(ctrl=>
-      h('div',{ class: 'property clearfix'},[
-          h('label',{ class: 'property-title'},jb.ui.fieldTitle(cmp,ctrl,h)),
-          h(ctrl)
-    ]))),
-    css: `>.property {
-          float: left;
-          width: %$fieldWidth%px;
-          margin-right: %$spacing%px;
-        }
-      .clearfix:after {
-        content: "";
-        clear: both;
-      }
-      >.property:last-child { margin-right:0 }
-      >.property>.property-title {
-        margin-bottom: 3px;
-        overflow:hidden;
-        text-overflow:ellipsis;
-        vertical-align:top;
-        font-size:14px;
-      }`,
-    features: group.initGroup()
-  })
-})
-
-jb.component('property-sheet.titles-left', { /* propertySheet.titlesLeft */
-  type: 'group.style',
-  params: [
-    {id: 'vSpacing', as: 'number', defaultValue: 20},
-    {id: 'hSpacing', as: 'number', defaultValue: 20},
-    {id: 'titleWidth', as: 'number', defaultValue: 100}
-  ],
-  impl: customStyle({
-    template: (cmp,state,h) => h('div',{}, state.ctrls.map(ctrl=>
-      h('div',{ class: 'property'},[
-          h('label',{ class: 'property-title'}, jb.ui.fieldTitle(cmp,ctrl,h)),
-          h(ctrl)
-    ]))),
-    css: `>.property { margin-bottom: %$vSpacing%px; display: flex }
-      >.property:last-child { margin-bottom:0px }
-      >.property>.property-title {
-        width: %$titleWidth%px;
-        overflow:hidden;
-        text-overflow:ellipsis;
-        vertical-align:top;
-        margin-top:2px;
-        font-size:14px;
-        margin-right: %$hSpacing%px;
-      }
-      >.property>*:last-child { margin-right:0 }`,
+    template: (cmp,{ctrls,titleStyle,titleText},h) => h('div',{ style: {'grid-template-columns': ctrls.map(()=>'auto').join(' ')}}, [
+        ...ctrls.map(ctrl=>
+          h(cmp.ctx.run(text({
+            text: ctx => titleText(ctx.setData(ctrl.field().title())), 
+            style: ctx => titleStyle(ctx)})))), 
+        ...ctrls.map(ctrl=>h(ctrl))
+      ]
+    ),
+    css: '{ display: grid; grid-column-gap:%$spacing% }',
     features: group.initGroup()
   })
 })

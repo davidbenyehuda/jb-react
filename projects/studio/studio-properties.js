@@ -1,33 +1,210 @@
-jb.component('studio.properties-tree-nodes', {
-  type: 'tree.node-model',
+jb.component('studio.openProperties', {
+  type: 'action',
   params: [
-    {id: 'path', as: 'string'}
+    {id: 'focus', type: 'boolean', as: 'boolean'},
+    {id: 'innerPath', as: 'string'},
   ],
-  impl: (ctx,path) => new jb.studio.PropertiesTree(path)
+  impl: runActions(
+    Var('path', studio.currentProfilePath()),
+    action.if(
+        studio.compName('%$path%'),
+        openDialog({
+          style: dialog.studioFloating({id: 'studio-properties', width: '500'}),
+          content: studio.properties({path: '%$path%', innerPath: '%$innerPath%', focus: '%$focus%'}),
+          title: pipeline(
+            {
+                '$': 'object',
+                title: studio.shortTitle('%$path%'),
+                comp: studio.compName('%$path%')
+              },
+            If(equals('%comp%', '%title%'), '%comp%', '%comp% %title%'),
+            'Properties of %%'
+          ),
+          features: [
+            feature.keyboardShortcut('Ctrl+Left', studio.openControlTree()),
+            dialogFeature.resizer()
+          ]
+        })
+      )
+  )
 })
 
-jb.component('studio.properties-table-tree', {
+
+jb.component('studio.properties', {
   type: 'control',
   params: [
-    {id: 'path', as: 'string'}
+    {id: 'path', as: 'string'},
+    {id: 'innerPath', as: 'string'},
+    {id: 'focus', as: 'boolean'}
   ],
-  impl: tableTree({
-    treeModel: studio.PropertiesTreeNodes,
-    commonFields: [
-      studio.propertyField('%path%'),
-      studio.propertyToolbar('%path%')
+  impl: group({
+    controls: [
+      tableTree({
+        treeModel: (ctx,{},{path}) => new jb.studio.PropertiesTree(path),
+        commonFields: [
+          group({
+            controls: studio.propField('%path%', '%expanded%'),
+            features: [field.columnWidth('300')]
+          }),
+          group({
+            controls: studio.propertyToolbar('%path%'),
+            features: [field.columnWidth('20'), css('{ text-align: right }')]
+          })
+        ],
+        chapterHeadline: text({
+          text: ({data}) => {
+            const path = data.path
+            const prop = path.split('~').pop()
+            if (Array.isArray(jb.studio.valOfPath(path)))
+              return `${prop} (${jb.studio.valOfPath(path).length})`
+            if (isNaN(Number(prop)))
+              return prop
+            return Number(prop) + 1
+          },
+          features: [feature.hoverTitle(pipeline(studio.paramDef('%path%'), '%description%'))]
+        }),
+        style: tableTree.plain({hideHeaders: true, gapWidth: 100, noItemsCtrl: text('')}),
+        features: [
+          css(
+            `>tbody>tr>td.headline { vertical-align: inherit; margin-bottom: 7px; }
+            >tbody>tr>td>span>i { margin-bottom: 8px }`
+          ),
+          studio.watchPath({
+            path: '%$path%',
+            includeChildren: 'structure',
+            allowSelfRefresh: true
+          }),
+          tableTree.expandPath(studio.lastEdit()),
+          tableTree.expandPath('%$innerPath%')
+        ]
+      }),
+      group({
+        title: '',
+        layout: layout.flex({justifyContent: 'flex-end', alignItems: 'flex-end', spacing: '7'}),
+        controls: [
+          button({
+            title: 'new feature',
+            action: studio.openNewProfileDialog({path: '%$path%~features', type: 'feature'}),
+            style: button.href(),
+            features: [
+              feature.if(studio.isOfType('%$path%~features', 'feature')),
+              css.margin({top: '20', left: '5'})
+            ]
+          }),
+          button({
+            title: 'new icon',
+            action: studio.getOrCreateCompInArray('%$path%~features', 'feature.icon'),
+            style: button.mdcIcon(undefined, '24'),
+            features: feature.icon({icon: 'Creation', type: 'mdi', size: '16'})
+          }),
+          button({
+            title: 'new css',
+            action: studio.getOrCreateCompInArray('%$path%~features', 'css'),
+            style: button.mdcIcon(undefined, '24'),
+            features: feature.icon({icon: 'LanguageCss3', type: 'mdi', size: '16'})
+          }),
+          button({
+            title: 'size, padding & margin',
+            action: studio.openSizesEditor('%$path%'),
+            style: button.mdcIcon(undefined, '24'),
+            features: feature.icon({icon: 'business', type: 'mdc', size: '16'})
+          })
+        ]
+      })
     ],
-    chapterHeadline: label({title: ({data}) => {
-      const path = data.path
-      const prop = path.split('~').pop()
-      if (isNaN(Number(prop)))
-        return prop
-      return st.compNameOfPath(path)
-    }}),
+    features: feature.byCondition(
+      or('%$focus%', studio.lastEdit()),
+      group.autoFocusOnFirstInput()
+    )
   })
 })
 
-jb.component('studio.property-toolbar', { /* studio.propertyToolbar */
+jb.component('studio.propField', {
+  type: 'control',
+  params: [
+    {id: 'path', as: 'string'},
+    {id: 'expanded', as: 'boolean', type: 'boolean'}
+  ],
+  impl: group({
+    title: studio.propName('%$path%'),
+    controls: group({
+      controls: [
+        controlWithCondition(
+          and(
+            inGroup(list('feature.icon','icon','control.icon'),studio.compName(studio.parentPath('%$path%'))),
+            equals('icon',pipeline(studio.paramDef('%$path%'), '%id%'))
+          ),
+          studio.pickIcon('%$path%')
+        ),
+        controlWithCondition(
+          studio.editAs({ path: '%$path%', type: 'numericCss', anyParamIds: 'width,height,top,left,right,bottom,spacing,blurRadius,spreadRadius,horizontal,vertical,radius'}),
+          studio.propertyNumbericCss('%$path%')
+        ),
+        controlWithCondition(
+          studio.editAs({ path: '%$path%', type: 'numericZeroToOne', anyParamIds: 'opacity'}),
+          studio.propertyNumbericZeroToOne('%$path%')
+        ),
+        controlWithCondition(
+          studio.editAs({ path: '%$path%', type: 'color', anyParamIds: 'color,shadowColor'}),
+          studio.colorPicker('%$path%')
+        ),
+        controlWithCondition(
+          and(
+            studio.isOfType('%$path%', 'data,boolean'),
+            not(isOfType('string,number,boolean,undefined', '%$val%'))
+          ),
+          studio.propertyScript('%$path%')
+        ),
+        controlWithCondition(
+          and(studio.isOfType('%$path%', 'action'), isOfType('array', '%$val%')),
+          studio.propertyScript('%$path%')
+        ),
+        controlWithCondition('%$paramDef/options%', studio.propertyEnum('%$path%')),
+        controlWithCondition(
+          and(
+            '%$paramDef/as%==\"boolean\"',
+            or(inGroup(list(true, false), '%$val%'), isEmpty('%$val%')),
+            not('%$paramDef/dynamic%')
+          ),
+          studio.propertyBoolean('%$path%')
+        ),
+        controlWithCondition(
+          studio.isOfType('%$path%', 'data,boolean'),
+          studio.propertyPrimitive('%$path%')
+        ),
+        controlWithCondition(
+          or(
+            '%$expanded%',
+            isEmpty('%$val%'),
+            not(studio.isOfType('%$path%', 'data,boolean'))
+          ),
+          studio.pickProfile('%$path%')
+        ),
+        studio.propertyScript('%$path%')
+      ],
+      features: [
+        group.firstSucceeding(),
+        studio.watchPath({path: '%$path%', includeChildren: 'yes', recalcVars: true}),
+        variable({name: 'paramDef', value: studio.paramDef('%$path%')}),
+        variable({name: 'val', value: studio.val('%$path%')})
+      ]
+    }),
+    features: [
+      studio.propertyToolbarFeature('%$path%'),
+      field.keyboardShortcut('Ctrl+I', studio.openJbEditor('%$path%')),
+      If(
+        not(isOfType('string,number,boolean,undefined', studio.val('%$path%'))),
+        studio.watchPath({
+          path: '%$path%',
+          includeChildren: 'structure',
+          allowSelfRefresh: true
+        })
+      )
+    ]
+  })
+})
+
+jb.component('studio.propertyToolbar', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
@@ -39,65 +216,25 @@ jb.component('studio.property-toolbar', { /* studio.propertyToolbar */
   })
 })
 
-jb.component('studio.property-toolbar-feature', { /* studio.propertyToolbarFeature */
+jb.component('studio.propertyToolbarFeature', {
   type: 'feature',
   params: [
     {id: 'path', as: 'string'}
   ],
-  impl: list(
+  impl: features(
     field.toolbar(studio.propertyToolbar('%$path%')),
     studio.disabledSupport('%$path%')
   )
 })
 
-
-jb.component('studio.focus-on-first-property', { /* studio.focusOnFirstProperty */
-  type: 'action',
-  params: [
-    {id: 'delay', as: 'number', defaultValue: 100}
-  ],
-  impl: (ctx,delay) => {
-    jb.delay(delay).then ( _=> {
-    var elem =  Array.from(document.querySelectorAll('[dialogid="studio-properties"] input,textarea,select'))
-      .filter(e => e.getAttribute('type') != 'checkbox')[0];
-    elem && jb.ui.focus(elem,'studio.focus-on-first-property',ctx);
-    })
-  }
-})
-
-jb.component('studio.open-source-dialog', { /* studio.openSourceDialog */
-  type: 'action',
-  impl: openDialog({
-    style: dialog.dialogOkCancel(),
-    content: {'$': 'text', text: studio.compSource(), style: text.codemirror({})},
-    title: 'Source',
-    modal: true
-  })
-})
-
-jb.component('studio.properties-in-tgp', { /* studio.propertiesInTgp */
-  type: 'control',
-  params: [
-    {id: 'path', as: 'string'}
-  ],
-  impl: group({
-    style: propertySheet.studioPropertiesInTgp(),
-    controls: dynamicControls({
-      controlItems: studio.nonControlChildren('%$path%', true),
-      genericControl: studio.propertyField('%$controlItem%')
-    }),
-    features: group.autoFocusOnFirstInput()
-  })
-})
-
-jb.component('studio.property-script', { /* studio.propertyScript */
+jb.component('studio.propertyScript', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
   ],
   impl: group({
     controls: button({
-      title: (ctx,vars,{path}) => jb.prettyPrint(jb.studio.valOfPath(path)),
+      title: prettyPrint(studio.val('%$path%'), true),
       action: studio.openJbEditor('%$path%'),
       style: button.studioScript()
     }),
@@ -105,19 +242,74 @@ jb.component('studio.property-script', { /* studio.propertyScript */
   })
 })
 
-jb.component('studio.property-boolean', { /* studio.propertyBoolean */
+jb.component('studio.propertyNumbericCss', {
+  type: 'control',
+  params: [
+    {id: 'path', as: 'string'}
+  ],
+  impl: editableNumber({
+    databind: studio.ref('%$path%'),
+    style: editableNumber.slider(),
+    max: 20,
+    features: css('~ .text-input {width: 40px} ~ .slider-input { width: 100% }')
+  })
+})
+
+jb.component('studio.colorPicker', {
+  type: 'control',
+  params: [
+    {id: 'path', as: 'string'}
+  ],
+  impl: group({
+    controls:
+      button({
+      title: prettyPrint(studio.val('%$path%'), true),
+      style: button.studioScript(),
+      action: (ctx,{cmp},{path}) => {        
+          const parent = document.createElement('div')
+          const elemRect = cmp.base.getBoundingClientRect()
+          parent.style = `position: absolute; z-index: 10000; top: ${elemRect.top+ 10}px; left: ${elemRect.left+40}px;`
+          document.body.appendChild(parent)
+          const picker = new Picker({
+            parent,
+            color: jb.studio.valOfPath(path),
+            onChange: color => ctx.run(writeValue(studio.ref(path),color.rgbaString)),
+            onDone: () => { picker.destroy(); document.body.removeChild(parent) }
+          }) 
+          picker.show()
+        },
+      }),
+    features: studio.watchPath({path: '%$path%', includeChildren: 'yes'})
+  })
+})
+
+jb.component('studio.propertyNumbericZeroToOne', {
+  type: 'control',
+  params: [
+    {id: 'path', as: 'string'}
+  ],
+  impl: editableNumber({
+    databind: studio.ref('%$path%'),
+    style: editableNumber.slider(),
+    step: 0.1,
+    max: 1,
+    features: css('~ .text-input {width: 40px} ~ .slider-input { width: 100% }')
+  })
+})
+
+jb.component('studio.propertyBoolean', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
   ],
   impl: editableBoolean({
     databind: studio.ref('%$path%'),
-    style: editableBoolean.mdlSlideToggle(),
-    features: studio.watchPath({path: '%$path%', includeChildren: 'yes'})
+    style: editableBoolean.mdcSlideToggle(),
+    features: css('{flex-direction: row;     display: flex;} ~ label {padding-left: 10px }')
   })
 })
 
-jb.component('studio.property-enum', { /* studio.propertyEnum */
+jb.component('studio.propertyEnum', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
@@ -126,332 +318,34 @@ jb.component('studio.property-enum', { /* studio.propertyEnum */
     databind: studio.ref('%$path%'),
     options: studio.enumOptions('%$path%'),
     style: picklist.nativeMdLookOpen(),
-    features: studio.watchPath({path: '%$path%', includeChildren: 'yes'})
-  })
-})
-
-jb.component('studio.property-slider', { /* studio.propertySlider */
-  type: 'control',
-  params: [
-    {id: 'path', as: 'string'}
-  ],
-  impl: editableNumber({
-    vars: [Var('paramDef', studio.paramDef('%$path%'))],
-    databind: studio.ref('%$path%'),
-    style: editableNumber.slider(),
-    min: firstSucceeding('%$paramDef/min%', 0),
-    max: firstSucceeding('%$paramDef/max%', 100),
-    step: firstSucceeding('%$paramDef/step%', 1),
     features: [
-      css(
-        `>input-slider { width: 110px; }
->.input-text { width: 20px; padding-right: 15px; margin-top: 2px; }`
-      ),
-//      studio.watchPath('%$path%')
+      css.width({width: '100', minMax: 'min'}),
+      css('~ input {font-size: 1.2rem; border-bottom-color: black }')
     ]
   })
 })
 
-jb.component('studio.property-tgp', { /* studio.propertyTgp */
-  type: 'control',
-  params: [
-    {id: 'path', as: 'string'}
-  ],
-  impl: inlineControls(
-    studio.pickProfile('%$path%'),
-    studio.propertiesInTgp('%$path%')
-  )
-})
-
-jb.component('studio.properties-expanded-relevant', { /* studio.propertiesExpandedRelevant */
-  type: 'boolean',
-  params: [
-    {id: 'path', as: 'string', mandatory: true}
-  ],
-  impl: and(
-    notEmpty(studio.nonControlChildren('%$path%')),
-    notEmpty(studio.val('%$path%')),
-    notEquals(studio.compName('%$path%'), 'custom-style')
-  )
-})
-
-jb.component('studio.property-tgp-old', { /* studio.propertyTgpOld */
+jb.component('studio.jbFloatingInputRich', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
   ],
   impl: group({
-    controls: [
-      group({
-        title: 'header',
-        style: layout.horizontal(0),
-        controls: [
-          editableBoolean({
-            databind: '%$userExpanded%',
-            style: editableBoolean.expandCollapse(),
-            features: [
-              field.initValue(studio.isNew('%$path%')),
-              hidden(studio.propertiesExpandedRelevant('%$path%')),
-              css('{ position: absolute; margin-left: -20px; margin-top: 5px }')
-            ]
-          }),
-          group({controls: studio.pickProfile('%$path%'), features: css.width(150)})
-        ],
-        features: [css('{ position: relative }'), studio.watchPath('%$path%')]
-      }),
-      group({
-        title: 'inner',
-        controls: studio.propertiesInTgp('%$path%'),
-        features: [
-          studio.watchPath('%$path%'),
-          watchRef('%$userExpanded%'),
-          feature.if('%$userExpanded%'),
-          css('{ margin-top: 9px; margin-left: -83px; margin-bottom: 4px;}')
-        ]
-      })
-    ],
-    features: [variable({name: 'userExpanded', value: false, watchable: true})]
-  })
-})
-
-jb.component('studio.property-tgp-in-array', { /* studio.propertyTgpInArray */
-  type: 'control',
-  params: [
-    {id: 'path', as: 'string'}
-  ],
-  impl: group({
-    controls: [
-      group({
-        style: layout.flex('space-between'),
-        controls: [
-          editableBoolean({
-            databind: '%$expanded%',
-            style: editableBoolean.expandCollapse(),
-            features: [css.padding('4')]
-          }),
-          label({
-            title: pipeline(studio.compName('%$path%'), suffix('.', '%%')),
-            style: label.htmlTag('p'),
-            features: [css.width('100'), css.class('drag-handle'), css('{font-weight: bold}')]
-          }),
-          label({
-            title: studio.summary('%$path%'),
-            style: label.htmlTag('p'),
-            features: [css.width('335'), studio.watchPath({path: '%$path%', includeChildren: 'yes'})]
-          }),
-          studio.propertyToolbar('%$path%')
-        ],
-        features: [studio.disabledSupport('%$path%')]
-      }),
-      group({
-        controls: studio.propertiesInTgp('%$path%'),
-        features: [
-          feature.if('%$expanded%'),
-          watchRef('%$expanded%'),
-          css('{ margin-left: 10px; margin-bottom: 4px;}'),
-          studio.disabledSupport('%$path%')
-        ]
-      })
-    ],
-    features: [
-      css.margin({left: '-100'}),
-      variable({name: 'expanded', value: studio.isNew('%$path%'), watchable: true}),
-      studio.watchPath({path: '%$path%', includeChildren: 'structure'})
-    ]
-  })
-})
-
-jb.component('studio.property-array', { /* studio.propertyArray */
-  type: 'control',
-  params: [
-    {id: 'path', as: 'string'}
-  ],
-  impl: itemlist({
-    items: studio.asArrayChildren('%$path%'),
-    controls: group({
-      style: propertySheet.studioPlain(),
-      controls: studio.propertyTgpInArray('%$arrayItem%')
-    }),
-    itemVariable: 'arrayItem',
-    features: [
-      studio.watchPath({
-        path: '%$path%',
-        includeChildren: 'structure',
-        allowSelfRefresh: true
-      }),
-      itemlist.divider(),
-      itemlist.dragAndDrop()
-    ]
-  })
-})
-
-jb.component('studio.property-field', { /* studio.propertyField */
-  type: 'control',
-  params: [
-    {id: 'path', as: 'string'}
-  ],
-  impl: group({
-    title: studio.propName('%$path%'),
-    controls: control.firstSucceeding({
-      vars: Var('paramDef', studio.paramDef('%$path%')),
-      controls: [
-        controlWithCondition(
-          and(
-            studio.isOfType('%$path%', 'data,boolean'),
-            not(isOfType('string,number,boolean,undefined', studio.val('%$path%')))
-          ),
-          studio.propertyScript('%$path%')
-        ),
-        controlWithCondition(
-          and(
-            studio.isOfType('%$path%', 'action'),
-            isOfType('array', studio.val('%$path%'))
-          ),
-          studio.propertyScript('%$path%')
-        ),
-        controlWithCondition('%$paramDef/options%', studio.propertyEnum('%$path%')),
-        controlWithCondition(
-          '%$paramDef/as%==\"number\"',
-          studio.propertySlider('%$path%')
-        ),
-        controlWithCondition(
-          and(
-            '%$paramDef/as%==\"boolean\"',
-            or(
-                inGroup(list(true, false), studio.val('%$path%')),
-                isEmpty(studio.val('%$path%'))
-              ),
-            not('%$paramDef/dynamic%')
-          ),
-          studio.propertyBoolean('%$path%')
-        ),
-        controlWithCondition(
-          studio.isOfType('%$path%', 'data,boolean'),
-          studio.propertyPrimitive('%$path%')
-        ),
-        studio.propertyTgpOld('%$path%')
-      ],
-      features: firstSucceeding.watchRefreshOnCtrlChange(studio.ref('%$path%'), true)
-    }),
-    features: [
-      studio.propertyToolbarFeature('%$path%'),
-      field.keyboardShortcut('Ctrl+I', studio.openJbEditor('%$path%'))
-    ]
-  })
-})
-
-jb.component('studio.jb-floating-input-rich', { /* studio.jbFloatingInputRich */
-  type: 'control',
-  params: [
-    {id: 'path', as: 'string'}
-  ],
-  impl: group({
-    controls: studio.propertyField('%$path%'),
+    controls: studio.propField('%$path%'),
     features: css('{padding: 20px}')
   })
 })
 
-jb.component('studio.properties', { /* studio.properties */
-  type: 'control',
+jb.component('studio.editAs',{
+  description: 'has editHas param',
+  type: 'boolean',
   params: [
-    {id: 'path', as: 'string'}
+    {id: 'path', as: 'string'},
+    {id: 'type', as: 'string'},
+    {id: 'anyParamIds', as: 'string'},
   ],
-  impl: group({
-    controls: [
-      group({
-        title: 'accordion',
-        style: group.studioPropertiesAccordion(),
-        controls: [
-          group({
-            remark: 'properties',
-            title: pipeline(count(studio.nonControlChildren('%$path%')), 'Properties (%%)'),
-            style: customStyle({
-              template: (cmp,state,h) => h('table',{}, state.ctrls.map(ctrl=>
-      h('tr',{ class: 'property' },[
-          h('td',{ class: 'property-title', title: ctrl.title}, ctrl.title),
-          h('td',{ class: 'property-ctrl'},h(ctrl)),
-          h('td',{ class: 'property-toolbar'}, h(ctrl.jbComp.toolbar) ),
-      ])
-    )),
-              css: `
-      { width: 100% }
-      >.property>.property-title { width: 90px; padding-right: 5px; padding-top: 5px;  font-weight: bold;}
-      >.property>.property-toolbar { text-align: right}
-      >.property>.property-toolbar>i { margin-right: 5px } 
-      >.property>td { vertical-align: top; }
-    `,
-              features: group.initGroup()
-            }),
-            controls: [
-              dynamicControls({
-                controlItems: studio.nonControlChildren('%$path%'),
-                genericControl: studio.propertyField('%$controlItem%')
-              })
-            ]
-          }),
-          group({
-            remark: 'features',
-            title: pipeline(count(studio.val('%$path%~features')), 'Features (%%)'),
-            controls: studio.propertyArray('%$path%~features')
-          })
-        ],
-        features: [
-          group.dynamicTitles(),
-          studio.watchPath({path: '%$path%~features', allowSelfRefresh: true}),
-          hidden(
-            remark('not a control'),
-            studio.hasParam(remark('not a control'), '%$path%', 'features')
-          )
-        ]
-      }),
-      label({
-        title: pipeline(
-          studio.profileAsText('%$path%~features'),
-          If(inGroup(list('[]', "''"), '%%'), '', '%%')
-        ),
-        style: label.span(),
-        features: [
-          css.width('400'),
-          css('{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis}'),
-          feature.hoverTitle('%%')
-        ]
-      }),
-      button({
-        title: 'new feature',
-        action: studio.openNewProfileDialog({
-          path: '%$path%~features',
-          type: 'feature',
-          onClose: runActions(ctx => ctx.vars.PropertiesDialog.openFeatureSection())
-        }),
-        style: button.href(),
-        features: css.margin({top: '20', left: '5'})
-      })
-    ],
-    features: variable({name: 'PropertiesDialog', value: {'$': 'object'}, watchable: false})
-  })
+  impl: or(
+    Var('paramDef',studio.paramDef('%$path%')),
+    equals('%$paramDef/editAs%','%$type%'),
+    inGroup(split({text: '%$anyParamIds%'}),'%$paramDef/id%')),
 })
-
-jb.component('studio.open-properties', { /* studio.openProperties */ 
-  type: 'action',
-  params: [
-    {id: 'focus', type: 'boolean', as: 'boolean'}
-  ],
-  impl: openDialog({
-    style: dialog.studioFloating({id: 'studio-properties', width: '500'}),
-    content: studio.properties(studio.currentProfilePath()),
-    title: pipeline(
-      {
-          '$': 'object',
-          title: studio.shortTitle(studio.currentProfilePath()),
-          comp: studio.compName(studio.currentProfilePath())
-        },
-      'Properties of %comp% %title%'
-    ),
-    features: [
-      {'$if': '%$focus%', then: dialogFeature.autoFocusOnFirstInput()},
-      feature.keyboardShortcut('Ctrl+Left', studio.openControlTree()),
-      dialogFeature.resizer()
-    ]
-  })
-})
-

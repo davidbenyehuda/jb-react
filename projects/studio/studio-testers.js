@@ -7,21 +7,18 @@ function compsRef(val,opEvent) {
     jb.comps = val;
   }
 }
+compsRef.id = 'comps-test'
 
 st.initTests = function() {
   st.compsRefHandler = st.compsRefHandler || jb.ui.extraWatchableHandler(compsRef);
 }
 
-jb.component('suggestions-test', { /* suggestionsTest */
+jb.component('suggestionsTest', {
   type: 'test',
   params: [
     {id: 'expression', as: 'string'},
     {id: 'selectionStart', as: 'number', defaultValue: -1},
-    {
-      id: 'path',
-      as: 'string',
-      defaultValue: 'suggestions-test.default-probe~impl~title'
-    },
+    {id: 'path', as: 'string', defaultValue: 'suggestionsTest.defaultProbe~impl~text'},
     {id: 'expectedResult', type: 'boolean', dynamic: true, as: 'boolean'}
   ],
   impl: dataTest({
@@ -35,7 +32,7 @@ jb.component('suggestions-test', { /* suggestionsTest */
       return probeRes.then(res=>{
         const probeCtx = res.result[0] && res.result[0].in;
         const obj = new jb.studio.suggestions({ value: params.expression, selectionStart: selectionStart })
-          .extendWithOptions(probeCtx.setVars({'people-array': ctx.exp('%$people-array%')}),probeCtx.path);
+          .extendWithOptions(probeCtx.setVar('people-array',ctx.exp('%$people-array%')),probeCtx.path);
         return JSON.stringify(JSON.stringify(obj.options.map(x=>x.text)));
       })
     },
@@ -43,7 +40,7 @@ jb.component('suggestions-test', { /* suggestionsTest */
   })
 })
 
-jb.component('jb-editor-children-test', { /* jbEditorChildrenTest */
+jb.component('jbEditorChildrenTest', {
   type: 'test',
   params: [
     {id: 'path', as: 'string'},
@@ -54,16 +51,14 @@ jb.component('jb-editor-children-test', { /* jbEditorChildrenTest */
     calculate: ctx => {
       const params = ctx.componentContext.params;
       const mdl = new jb.studio.jbEditorTree('');
-      const titles = mdl.children(params.path)
-        .map(path=>
-          mdl.title(path,true));
+      const titles = mdl.children(params.path).map(path=>mdl.title(path,true));
       return JSON.stringify(titles);
     },
     expectedResult: call('expectedResult')
   })
 })
 
-jb.component('studio-probe-test', { /* studioProbeTest */
+jb.component('studioProbeTest', {
   type: 'test',
   params: [
     {id: 'circuit', type: 'control', dynamic: true},
@@ -100,7 +95,7 @@ jb.component('studio-probe-test', { /* studioProbeTest */
   }
 })
 
-jb.component('path-change-test', { /* pathChangeTest */
+jb.component('pathChangeTest', {
   type: 'test',
   params: [
     {id: 'path', as: 'string'},

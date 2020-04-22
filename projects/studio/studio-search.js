@@ -1,62 +1,60 @@
-jb.component('studio.search-list', { /* studio.searchList */
+jb.component('studio.searchList', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
   ],
-  impl: group({
-    controls: [
-      table({
+  impl: itemlist({
         items: pipeline(
-          studio.componentsCrossRef(),
+          studio.allComps(),
           itemlistContainer.filter(),
-          sort('refCount'),
-          slice('0', '50')
+          studio.componentStatistics('%%'),
         ),
-        fields: [
-          field.control({
-            control: materialIcon({
+        visualSizeLimit: 30,
+        controls: [
+          control.icon({
               icon: studio.iconOfType('%type%'),
               features: [
                 css.opacity('0.3'),
                 css('{ font-size: 16px }'),
                 css.padding({top: '5', left: '5'})
               ]
-            })
           }),
-          field.control({
-            title: 'id',
-            control: button({
+          button({
               title: pipeline(
-                highlight(
+                text.highlight(
                     '%id%',
                     '%$itemlistCntrData/search_pattern%',
-                    'mdl-color-text--indigo-A700'
+                    'mdl-color-text--deep-purple-A700'
                   )
               ),
-              action: studio.gotoPath('%id%'),
-              style: button.href()
-            }),
-            width: '200'
+              action: studio.openJbEditor('%id%'),
+              style: button.href(),
+              features: [field.columnWidth(200), field.title('id')]
           }),
-          field.control({
-            title: 'refs',
-            control: button({
+          button({
               title: '%refCount%',
               action: menu.openContextMenu({
                 menu: menu.menu({
                   options: [studio.gotoReferencesOptions('%id%', studio.references('%id%'))]
                 })
               }),
-              style: button.href()
-            })
+              style: button.href(),
+              features: field.title('refCount')
           }),
-          field({title: 'type', data: '%type%'}),
-          field({
-            title: 'impl',
-            data: pipeline('%implType%', data.if('%% = \"function\"', 'javascript', ''))
-          })
+          text({
+            text: '%type%',
+            features: field.title('type')
+          }),
+          text({
+            text: pipeline('%file%', split({separator: '/', part: 'last'})),
+            features: field.title('file')
+          }),
+          text({
+            text: pipeline('%implType%', data.if('%% = \"function\"', 'javascript', '')),
+            features: field.title('impl')
+          }),
         ],
-        style: table.withHeaders(),
+        style: table.plain(),
         features: [
           watchRef('%$itemlistCntrData/search_pattern%'),
           itemlist.selection({
@@ -65,43 +63,45 @@ jb.component('studio.search-list', { /* studio.searchList */
             databindToSelected: '%%',
             cssForSelected: 'background: #bbb !important; color: #fff !important'
           }),
-          itemlist.keyboardSelection({onEnter: studio.gotoPath('%id%')})
-        ]
-      })
-    ],
-    features: [
-      css.boxShadow({shadowColor: '#cccccc'}),
-      css.padding({top: '4', right: '5'}),
-      css.height({height: '600', overflow: 'auto', minMax: 'max'}),
-      css.width({width: '400', minMax: 'min'})
-    ]
-  })
+          itemlist.infiniteScroll(),
+          itemlist.keyboardSelection({onEnter: studio.gotoPath('%id%')}),
+          css.boxShadow({shadowColor: '#cccccc'}),
+          css.padding({top: '4', right: '5'}),
+          css.height({height: '600', overflow: 'auto', minMax: 'max'}),
+          css.width({width: '400', minMax: 'min'})
+      ]
+    }),
 })
 
-jb.component('studio.search-component', { /* studio.searchComponent */
+jb.component('studio.searchComponent', {
   type: 'control',
   params: [
     {id: 'path', as: 'string'}
   ],
   impl: group({
     title: 'itemlist-with-find',
-    style: layout.horizontal(''),
+    layout: layout.horizontal(''),
     controls: [
       itemlistContainer.search({
         title: 'Search',
-        searchIn: item =>
-          item.id,
         databind: '%$itemlistCntrData/search_pattern%',
-        style: editableText.mdlSearch(),
+        style: editableText.mdcSearch(),
         features: [
           editableText.helperPopup({
             control: studio.searchList(),
             popupId: 'search-component',
-            popupStyle: dialog.popup()
-          })
+            popupStyle: styleWithFeatures(
+              dialog.popup(),
+              dialogFeature.nearLauncherPosition({offsetTop: 50})
+            )
+          }),
+          css.margin({top: '-30', left: '10'}),
+          css('~ input {border: 0 } {height: 35px; background: white !important;}'),
+          css(''),
+          css('~ i { top: 40px !important; right: 0px !important}')
         ]
       })
     ],
-    features: [group.itemlistContainer({}), css.margin({top: '-13', left: '10'})]
+    features: [group.itemlistContainer({})]
   })
 })

@@ -1,24 +1,32 @@
 fs = require('fs');
 http = require('http');
 child = require('child_process');
+const fetch = require('node-fetch');
 
 file_type_handlers = {};
 
 _iswin = /^win/.test(process.platform);
 
-const settings = JSON.parse(fs.readFileSync(`${__dirname}/jbart.json`));
+let settings = { port: 8083, open_source_cmd_vsCode: 'code -r -g', http_dir: './', exclude: 'node_modules|\.git', verbose: getProcessArgument('verbose') }
+try {
+  Object.assign(settings,JSON.parse(fs.readFileSync('./jbart.json')))
+  if (settings.verbose) console.log('settings',settings)
+} catch(e) {}
+
 // define projects not under /jbart/projects directory
 let sites = null;
+const projectstDir = settings.devHost ? 'projects' : './'
+const rootName = process.cwd().split('/').pop().split('\\').pop()
+const jbReactDir = fs.existsSync('node_modules/jb-react/') ? 'node_modules/jb-react/' : './'
+
 function projectDirectory(project) {
-    // if (project == 'bin')
-    //    return 'node_modules/jbart5-react/bin'
     sites = sites || externalSites() || {};
     const site = Object.keys(sites).filter(site=>project.indexOf(site+'-') != -1)[0];
-    const res = site ? `${sites[site]}/${project.substring(site.length+1)}` : `${settings.http_dir}projects/${project}`;
+    const res = site ? `${sites[site]}/${project.substring(site.length+1)}` : `${settings.http_dir}${projectstDir}/${rootName == project ? '' : project}`;
     return res;
 
     function externalSites() {
-      try { return JSON.parse(fs.readFileSync(`${__dirname}/sites.json`)) } catch (e) {}
+      try { return JSON.parse(fs.readFileSync(`./sites.json`)) } catch (e) {}
     }
 }
 
@@ -59,7 +67,7 @@ function serve(req, res) {
 }
 
 // static file handlers
-supported_ext =  ['js','gif','png','jpg','html','xml','css','xtml','txt','json','bmp','woff','jsx','prj','woff2','map','ico'];
+supported_ext =  ['js','gif','png','jpg','html','xml','css','xtml','txt','json','bmp','woff','jsx','prj','woff2','map','ico','svg'];
 for(i=0;i<supported_ext.length;i++)
   file_type_handlers[supported_ext[i]] = function(req, res,path) { serveFile(req,res,path); };
 
@@ -67,9 +75,14 @@ function calcFullPath(path) {
   const project_match = path.match(/^projects\/([^/]*)(.*)/);
   if (project_match)
     return projectDirectory(project_match[1]) + project_match[2]
-  const bin_match = path.match(/^bin\/(.*)/);
-  if (bin_match)
-      return `node_modules/jbart5-react/bin/${bin_match[1]}`
+  if (!settings.devHost) {
+    const bin_match = path.match(/^bin\/(.*)/);
+    if (bin_match)
+        return `${jbReactDir}bin/${bin_match[1]}`
+    const dist_match = path.match(/^dist\/(.*)/);
+    if (dist_match)
+        return `${jbReactDir}dist/${dist_match[1]}`
+  }
   return settings.http_dir + path;
 }
 
@@ -77,6 +90,8 @@ function serveFile(req,res,path) {
 //  console.log(path,full_path);
   const full_path = calcFullPath(path).replace(/!st!/,'')
   const extension = path.split('.').pop();
+  if (settings.verbose) console.log('reading file ',full_path)
+
 
   fs.readFile(_path(full_path), function (err, content) {
     if (err) {
@@ -91,6 +106,7 @@ function serveFile(req,res,path) {
           res.statusCode = 500;
           return endWithFailure(res,'file status code 500 ' + full_path + ' ' + err);
         } else {
+          res.setHeader('Cache-Control','max-age: 0, must-revalidate,no-cache');
           const etag = stat.size + '-' + Date.parse(stat.mtime);
           res.setHeader('Last-Modified', stat.mtime);
 
@@ -140,18 +156,19 @@ const op_post_handlers = {
           endWithFailure(res,e)
         }
     },
-    saveFile: function(req, res,body,path) {
+    saveFile: function(req, res,body) {
         let clientReq;
         try {
           clientReq = JSON.parse(body);
         } catch(e) {}
         if (!clientReq)
            return endWithFailure(res,'Can not parse json request');
-        fs.writeFile(clientReq.Path || '', clientReq.Contents || '' , function (err) {
+        const path = settings.http_dir + _path(clientReq.Path)
+        fs.writeFile(path || '', clientReq.Contents || '' , function (err) {
           if (err)
-            endWithFailure(res,'Can not write to file ' + clientReq.Path);
+            endWithFailure(res,'Can not write to file ' + path);
           else
-            endWithSuccess(res,'File saved to ' + clientReq.Path);
+            endWithSuccess(res,'File saved to ' + path);
         });
     },
     createProject: function(req, res,body,path) {
@@ -160,29 +177,57 @@ const op_post_handlers = {
         clientReq = JSON.parse(body);
         if (!clientReq)
            return endWithFailure(res,'Can not parse json request');
-        const projDir = 'projects/' + clientReq.project;
+        const projDir = clientReq.baseDir || projectDirectory(clientReq.project)
+        if (fs.existsSync(projDir))
+          return endWithFailure(res,'Project already exists');
+
         fs.mkdirSync(projDir);
-        (clientReq.files || []).forEach(f=>
-          fs.writeFileSync(projDir+ '/' + f.fileName,f.content)
+        Object.keys(clientReq.files).forEach(f=>
+          fs.writeFileSync(projDir+ '/' + f,clientReq.files[f])
         )
       } catch(e) {
-        endWithFailure(res,e)
+        return endWithFailure(res,e)
       }
       endWithSuccess(res,'Project Created');
+    },
+    createDirectoryWithFiles: function(req, res,body,path) {
+      let clientReq;
+      try {
+        clientReq = JSON.parse(body);
+        if (!clientReq)
+           return endWithFailure(res,'Can not parse json request');
+        const baseDir = clientReq.baseDir;
+        if (baseDir != './') {
+          if (fs.existsSync(baseDir))
+            return endWithFailure(res,`directory ${baseDir} already exists`);
+          fs.mkdirSync(baseDir);
+        } else {
+          if (fs.existsSync(`./${rootName}.html`))
+            return endWithFailure(res,`${rootName}.html already exists`);
+        }
+        Object.keys(clientReq.files).forEach(f=>
+          fs.writeFileSync(baseDir+ '/' + f,clientReq.files[f])
+        )
+        endWithSuccess(res,`directory ${baseDir} created with ${Object.keys(clientReq.files).legnth} files`);
+      } catch(e) {
+        return endWithFailure(res,e)
+      }
     }
 };
 
 const base_get_handlers = {
   'studio-bin': (req,res) =>
-    file_type_handlers.html(req,res,'node_modules/jbart5-react/bin/studio/studio-bin.html'),
+    file_type_handlers.html(req,res,`${jbReactDir}bin/studio/studio-bin.html`),
   studio: (req,res) => 
-    file_type_handlers.html(req,res,'projects/studio/studio.html'),
-  project(req,res,path) {
+    file_type_handlers.html(req,res,`projects/studio/studio.html`),
+  project(req,res) {
     const project_with_params = req.url.split('/')[2];
     const project = project_with_params.split('?')[0];
     // if (external_projects[project])
     //   return file_type_handlers.html(req,res, external_projects[project] + `/${project}/${project}.html`);
-    return file_type_handlers.html(req,res,`projects/${project}/${project}.html`);
+    const path = `${projectDirectory(project)}/${project}.html`
+    const htmlFileName = fs.existsSync(path) ? path : `${projectDirectory(project)}/index.html`
+    return file_type_handlers.html(req,res,htmlFileName);
   }
 };
 
@@ -216,6 +261,18 @@ const op_get_handlers = {
         }
       });
     },
+    settings: (req,res) => {
+      res.setHeader('Content-Type', 'application/json;charset=utf8');
+      res.end(JSON.stringify(Object.assign({rootName},settings)))
+    },
+    rootName: (req,res) => {
+      res.setHeader('Content-Type', 'application/text;charset=utf8');
+      res.end(rootName);
+    },
+    rootExists: (req,res) => {
+      res.setHeader('Content-Type', 'application/text;charset=utf8');
+      res.end('' + fs.existsSync(`./${rootName}.html`));
+    },
     ls: function(req,res) {
       const path = getURLParam(req,'path');
       const full_path = settings.http_dir + path;
@@ -245,24 +302,49 @@ const op_get_handlers = {
       res.end(getURLParam(req,'data'));
     },
     projects: function(req,res,path) {
-      res.end(JSON.stringify({projects: fs.readdirSync('projects')}));
+      const projects = fs.readdirSync(projectstDir)
+        .filter(dir=>fs.statSync(projectstDir + '/' + dir).isDirectory())
+        .filter(dir=>!dir.match(new RegExp(settings.exclude)))
+        .concat(fs.existsSync(`./${rootName}.html`) ? [rootName] : [])
+      res.end(JSON.stringify({projects}));
     },
-    gotoSource: function(req,res,path) {
+    gotoSource: function(req,res) {
+      const path = getURLParam(req,'path');
+      if (path)
+        return gotoFile(path.split(':')[0],path.split(':')[1])
+
       const comp = getURLParam(req,'comp');
       const files = walk('projects').concat(walk('src'));
       files.filter(x=>x.match(/\.(ts|js)$/))
         .forEach(srcPath=>{
                 const source = ('' + fs.readFileSync(srcPath)).split('\n');
                 source.map((line,no)=> {
-                  if (line.indexOf(`component('${comp}'`) != -1) {
-                    const cmd = settings.open_source_cmd + srcPath+':'+(no+1);
-                    console.log(cmd);
-                    child.exec(cmd,{});
-                    endWithSuccess(res,'open editor cmd: ' + cmd);
+                  if (line.indexOf(`component('${comp}'`) != -1 || line.indexOf(`/* ${comp} */`) != -1) {
+                    gotoFile(srcPath,no)
                   }
                 })
         })
-    }
+      function gotoFile(srcPath,no) {
+        const cmd = settings.open_source_cmd + srcPath+':'+ ((+no)+1);
+        console.log(cmd);
+        child.exec(cmd,{});
+        endWithSuccess(res,'open editor cmd: ' + cmd);
+      }
+    },
+    fetch: function(req, res) {
+      try {
+        const param = getURLParam(req,'req')
+        const fetchReq = JSON.parse(param);
+        if (!fetchReq)
+           return endWithFailure(fetchReq,'Can not parse fetchReq');
+        return fetch(fetchReq.url,fetchReq)
+          .then(res=> res.text())
+          .then(result=> res.end(result))
+          .catch(e => endWithFailure(res, param + '. ' + e.message ))
+      } catch(e) {
+        return endWithFailure(res,e)
+      }
+    },
 };
 
 
@@ -395,6 +477,19 @@ function saveComp(toSave,original,comp,project,force,projectDir,destFileName) {
     }
 }
 
+function getProcessArgument(argName) {
+  for (let i = 0; i < process.argv.length; i++) {
+    const arg = process.argv[i];
+    if (arg.indexOf('-' + argName + ':') == 0) 
+      return arg.substring(arg.indexOf(':') + 1).replace(/'/g,'');
+    if (arg == '-' + argName) return true;
+  }
+  return '';
+}
+
 http.createServer(serve).listen(settings.port);
 
-console.log(`hello-world url: http://localhost:${settings.port}/project/studio/hello-world`)
+if (process.cwd().indexOf('jb-react') != -1)
+  console.log(`hello-world url: http://localhost:${settings.port}/project/studio/hello-world`)
+else
+  console.log(`studio url: http://localhost:${settings.port}/studio-bin`)

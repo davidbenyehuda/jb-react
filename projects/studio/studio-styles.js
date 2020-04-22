@@ -1,32 +1,20 @@
-jb.component('editable-text.studio-primitive-text', { /* editableText.studioPrimitiveText */
+jb.component('editableText.studioPrimitiveText', {
   type: 'editable-text.style',
   impl: customStyle({
-    template: (cmp,state,h) => h('input', {
-          class: 'mdl-textfield__input',
-          value: state.model,
-          onchange: e => cmp.jbModel(e.target.value),
-          onkeyup: e => cmp.jbModel(e.target.value,'keyup')
-      }),
-    css: ':focus { border-color: #3F51B5; border-width: 2px}',
-    features: field.databindText()
+    template: (cmp,{databind},h) => h('input', {
+          class: 'mdc-text-field__input',
+          value: databind, onchange: true, onkeyup: true, onblur: true
+    }),
+    css: '{ padding-left: 2px; padding-top: 5px; padding-bottom: 0; font-size: 1.2rem; margin-bottom1: 7px;} :focus { border-color: #3F51B5; border-width: 2px}',
+    features: field.databindText(0, false)
   })
 })
 
-jb.component('editable-text.floating-input', { /* editableText.floatingInput */
+jb.component('editableText.floatingInput', {
   type: 'editable-text.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('div',{class:'mdl-textfield mdl-js-textfield mdl-textfield--floating-label'},[
-      h('input', { class: 'mdl-textfield__input', id1: 'jb_input_' + state.fieldId, type: 'text', autocomplete: 'nop',
-          value: state.model,
-          onchange: e => cmp.jbModel(e.target.value),
-      }),
-      h('label',{class: 'mdl-textfield__label', for: 'jb_input_' + state.fieldId},state.title)
-  ]),
-    css: '{ margin-right: 13px; }',
-    features: [field.databindText(300, true), mdlStyle.initDynamic()]
-  })
+  impl: styleWithFeatures(editableText.mdcInput(),
+    css(`~ .mdc-text-field__input  { font-size: 1.2rem; } ~ .mdc-text-field { width: 100%; margin-right: 13px;}`))
 })
-
 
 jb.studio.codeMirrorUtils = Object.assign(jb.studio.codeMirrorUtils || {}, {
   incNumberAtCursor(editor, {inc}) {
@@ -42,7 +30,7 @@ jb.studio.codeMirrorUtils = Object.assign(jb.studio.codeMirrorUtils || {}, {
   }
 })
 
-jb.component('editable-text.studio-codemirror-tgp', { /* editableText.studioCodemirrorTgp */
+jb.component('editableText.studioCodemirrorTgp', {
   type: 'editable-text.style',
   impl: editableText.codemirror({
     cm_settings: {
@@ -67,99 +55,50 @@ jb.component('editable-text.studio-codemirror-tgp', { /* editableText.studioCode
 })
 
 
-jb.component('button.select-profile-style', { /* button.selectProfileStyle */
+jb.component('button.selectProfileStyle', {
+  type: 'button.style',
+  impl: customStyle({
+    template: (cmp,{title},h) =>
+        h('input', { class: 'mdc-text-field__input', type: 'text', readonly: true, title,
+            value: title, onmouseup: 'onclickHandler', onkeydown: 'clickedEnter',
+        }),
+    css: '{ cursor: pointer; padding-left: 2px; padding-top: 5px; padding-bottom: 0; font-size: 1.2rem; margin-bottom1: 7px; } :focus { border-color: #3F51B5; border-width: 2px}',
+    features: interactive(
+      (ctx,{cmp}) => cmp.clickedEnter = () => event.keyCode == 13 && cmp.onclickHandler()
+    )
+  })
+})
+
+jb.component('studio.propertyToolbarStyle', {
+  type: 'button.style',
+  impl: customStyle({
+    template: (cmp,state,h) => h('i',{class: 'material-icons', onclick: true, title: 'more...' },'more_vert'),
+    css: `{ cursor: pointer;width: 16px; font-size: 16px; vertical-align: super; opacity: 0.5; transform: translate(-5px, 10px);}
+      ~:hover { opacity: 1}
+    `
+  })
+})
+
+jb.component('button.studioScript', {
   type: 'button.style',
   impl: customStyle({
     template: (cmp,state,h) =>
-        h('input', { class: 'mdl-textfield__input', type: 'text', readonly: true, title: state.title,
+        h('input', { class: 'mdc-text-field__input', type: 'text', readonly: true, title: state.title,
             value: state.title,
-            onmouseup:ev => cmp.clicked(ev),
-            onkeydown:ev => ev.keyCode == 13 && cmp.clicked(ev),
+            onmouseup: 'onclickHandler',
+            onkeydown: 'clickedEnter',
         }),
-    css: '{ cursor: pointer;width1: 367px } :focus { border-color: #3F51B5; border-width: 2px}'
+    css: '{ padding-left: 2px; padding-top: 5px; padding-bottom: 0; font-size: 1.2rem; margin-bottom1: 7px; cursor: pointer; opacity: 0.8; font-style: italic; }',
+    features: interactive(
+      (ctx,{cmp}) => cmp.clickedEnter = ev => event.keyCode == 13 && cmp.onclickHandler()
+    )
   })
 })
 
-jb.component('studio.property-toolbar-style', { /* studio.propertyToolbarStyle */
-  type: 'button.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('i',{class: 'material-icons',
-        onclick: ev => cmp.clicked(ev)
-      },'more_vert'),
-    css: '{ cursor: pointer;width: 16px; font-size: 16px; padding-top: 3px }'
-  })
-})
-
-
-jb.component('editable-text.jb-editor-floating-input', { /* editableText.jbEditorFloatingInput */
-  type: 'editable-text.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('div',{class:'mdl-textfield mdl-js-textfield mdl-textfield--floating-label'},[
-        h('input', { class: 'mdl-textfield__input', id: 'jb_input_' + state.fieldId, type: 'text',
-            value: state.model,
-            onchange: e => cmp.jbModel(e.target.value),
-            onkeyup: e => cmp.jbModel(e.target.value,'keyup'),
-        }),
-        h('label',{class: 'mdl-textfield__label', for: 'jb_input_' + state.fieldId},state.title)
-      ]),
-    css: '{ margin-right: 13px; }',
-    features: [field.databindText(300, true), mdlStyle.initDynamic()]
-  })
-})
-
-jb.component('button.studio-script', { /* button.studioScript */
-  type: 'button.style',
-  impl: customStyle({
-    template: (cmp,state,h) =>
-        h('input', { class: 'mdl-textfield__input', type: 'text', readonly: true, title: state.title,
-            value: state.title,
-            onmouseup:ev => cmp.clicked(ev),
-            onkeydown:ev => ev.keyCode == 13 && cmp.clicked(ev),
-        }),
-    css: '{ cursor: pointer;width1: 367px; opacity: 0.8; font-style: italic; }'
-  })
-})
-
-// jb.component('button.studio-script2', {
-//   type: 'button.style',
-//   impl :{$: 'custom-style',
-//       template: (cmp,state,h) => h('div', { title: state.title, onclick: _ => cmp.clicked() },
-//         h('div',{class:'inner-text'},state.title)),
-//           css: `>.inner-text {
-//   white-space: nowrap; overflow-x: hidden;
-//   display: inline; height: 16px;
-//   padding-left: 4px; padding-top: 2px;
-//   font: 12px "arial"; color: #555555;
-// }
-
-// {
-//   width: 149px;
-//   border: 1px solid #ccc; border-radius: 4px;
-//   cursor: pointer;
-//   box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.075);
-//   background: #eee;
-//   white-space: nowrap; overflow-x: hidden;
-//   text-overflow: ellipsis;
-// }`,
-// }
-// })
-
-
-// todo: take from http://creativeit.github.io/getmdl-select/
- // <div class="mdl-textfield mdl-js-textfield mdl-textfield--floating-label getmdl-select getmdl-select__fullwidth">
- //            <input class="mdl-textfield__input" type="text" id="sample1" value="Belarus" readonly tabIndex="-1">
- //            <label for="sample1" class="mdl-textfield__label">Country</label>
- //            <ul for="sample1" class="mdl-menu mdl-menu--bottom-left mdl-js-menu">
- //                <li class="mdl-menu__item">Germany</li>
- //                <li class="mdl-menu__item">Belarus</li>
- //                <li class="mdl-menu__item">Russia</li>
- //            </ul>
- //        </div>
-
-jb.component('picklist.studio-enum', { /* picklist.studioEnum */
+jb.component('picklist.studioEnum', {
   type: 'picklist.style',
   impl: customStyle({
-    template: (cmp,state,h) => h('select', { value: state.model, onchange: e => cmp.jbModel(e.target.value) },
+    template: (cmp,state,h) => h('select', { value: state.databind, onchange: true },
           state.options.map(option=>h('option',{value: option.code},option.text))
         ),
     css: `
@@ -177,155 +116,8 @@ jb.component('picklist.studio-enum', { /* picklist.studioEnum */
   })
 })
 
-
-jb.component('property-sheet.studio-properties', { /* propertySheet.studioProperties */
-  type: 'group.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('table',{}, state.ctrls.map(ctrl=>
-      h('tr',{ class: 'property' },[
-          h('td',{ class: 'property-title', title: ctrl.title}, ctrl.title),
-          h('td',{ class: 'property-ctrl'},h(ctrl)),
-          h('td',{ class: 'property-toolbar'}, h(ctrl.jbComp.toolbar) ),
-      ])
-    )),
-    css: `
-      { width: 100% }
-      >.property>.property-title { width: 90px; padding-right: 5px; padding-top: 5px }
-      >.property>td { vertical-align: top; }
-    `,
-    features: group.initGroup()
-  })
-})
-
-jb.component('property-sheet.studio-properties-in-tgp', { /* propertySheet.studioPropertiesInTgp */
-  type: 'group.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('table',{}, state.ctrls.map(ctrl=>
-      h('tr',{ class: 'property' },[
-          h('td',{ class: 'property-title', title: ctrl.title}, ctrl.title),
-          h('td',{ class: 'property-ctrl'},h(ctrl)),
-          h('td',{ class: 'property-toolbar'}, h(ctrl.jbComp.toolbar) ),
-      ])
-    )),
-    css: `
-      { width: 100% }
-      >.property>.property-title { width: 90px; padding-right: 5px; padding-top: 5px; font-weight: bold; }
-      >.property>.property-ctrl { }
-      >.property>td { vertical-align: top; }
-    `,
-    features: group.initGroup()
-  })
-})
-
-
-jb.component('property-sheet.studio-plain', { /* propertySheet.studioPlain */
-  type: 'group.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('div',{}, state.ctrls.map(ctrl=>
-      h('div',{ class: 'property' },[
-          h('label',{ class: 'property-title', title: ctrl.title}, ctrl.title),
-          h('div',{ class: 'input-and-toolbar'}, [
-            h(ctrl),
-            h(ctrl.jbComp.toolbar)
-          ])
-    ]))),
-    css: `>.property { margin-bottom: 5px; display: flex }
-      >.property:last-child { margin-bottom:0px }
-      >.property>.input-and-toolbar { display: flex; }
-      >.property>.input-and-toolbar>.toolbar { height: 16px; margin-left: 10px }
-      >.property>.property-title {
-        min-width: 90px;
-        width: 90px;
-        overflow:hidden;
-        text-overflow:ellipsis;
-        vertical-align:top;
-        margin-top:2px;
-        font-size:14px;
-        margin-right: 10px;
-        margin-left: 7px;
-      },
-      >.property>*:last-child { margin-right:0 }`,
-    features: group.initGroup()
-  })
-})
-
-jb.component('editable-boolean.studio-expand-collapse-in-toolbar', { /* editableBoolean.studioExpandCollapseInToolbar */
-  type: 'editable-boolean.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('button',{class: 'md-icon-button md-button',
-          onclick: _=> cmp.toggle(),
-          title: cmp.jbModel() ? 'collapse' : 'expand'},
-            h('i',{class: 'material-icons'}, cmp.jbModel() ? 'keyboard_arrow_down' : 'keyboard_arrow_right')
-          ),
-    css: `{ width: 24px; height: 24px; padding: 0; margin-top: -3px;}
-     	>i { font-size:12px;  }`
-  })
-})
-
-jb.component('editable-boolean.studio-expand-collapse-in-array', { /* editableBoolean.studioExpandCollapseInArray */
-  type: 'editable-boolean.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('button',{class: 'md-icon-button md-button',
-          onclick: _=> cmp.toggle(),
-          title: cmp.jbModel() ? 'collapse' : 'expand'},
-            h('i',{class: 'material-icons'}, cmp.jbModel() ? 'keyboard_arrow_down' : 'keyboard_arrow_right')
-          ),
-    css: `{ width: 24px; height: 24px; padding: 0; }
-     	>i { font-size:12px;  }
-      `
-  })
-})
-
-jb.component('dialog-feature.studio-position-under-property', { /* dialogFeature.studioPositionUnderProperty */
-  type: 'dialog-feature',
-  impl: (context,offsetLeft,offsetTop) => ({
-			afterViewInit: function(cmp) {
-				if (!context.vars.$launchingElement)
-					return console.log('no launcher for dialog');
-				var control = jb.ui.parents(context.vars.$launchingElement.el).filter(el=>jb.ui.matches(el,'.input-and-toolbar'));
-				var pos = jb.ui.offset(control);
-				var jbDialog = jb.ui.findIncludeSelf(cmp.base,'.jb-dialog')[0];
-        if (jbDialog) {
-  				jbDialog.style.left = `${pos.left}px`;
-          jbDialog.style.top = `${pos.top}px`;
-          jbDialog.style.display = 'block';
-        }
-			}
-		})
-})
-
-jb.component('group.studio-properties-accordion', { /* group.studioPropertiesAccordion */
-  type: 'group.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('section',{ class: 'jb-group'},
-        state.ctrls.map((ctrl,index)=> jb.ui.item(cmp,h('div',{ class: 'accordion-section' },[
-          h('div',{ class: 'header' },[
-            h('div',{ class: 'title', onclick: _=> cmp.show(index) }, ctrl.title),
-            h('button',{ class: 'mdl-button mdl-button--icon', title: cmp.expand_title(ctrl), onclick: _=> cmp.flip(index) },
-              h('i',{ class: 'material-icons'}, state.shown == index ? 'keyboard_arrow_down' : 'keyboard_arrow_right')
-            )
-          ])].concat(state.shown == index ? [h(ctrl)] : [])),ctrl.ctx.data)
-    )),
-    css: `>.accordion-section>.header { cursor: pointer; display: flex; flex-direction: row; background: #eee; margin-bottom: 2px; justify-content: space-between}
->.accordion-section>.header>button:hover { background: none }
->.accordion-section>.header>button { margin-left: 0px }
->.accordion-section>.header>button>i { color: #; cursor: pointer }
->.accordion-section>.header>.title { margin: 5px }
->.accordion-section:last-child() { padding-top: 2px }
-`,
-    features: [
-      group.initGroup(),
-      group.initAccordion(true, true),
-      ctx =>({
-          afterViewInit: cmp =>
-            ctx.vars.PropertiesDialog.openFeatureSection = _ => cmp.show(1)
-        })
-    ]
-  })
-})
-
-jb.component('label.studio-message', { /* label.studioMessage */
-  type: 'label.style',
+jb.component('text.studioMessage', {
+  type: 'text.style',
   impl: customStyle({
     template: (cmp,state,h) => h('span',{class: 'studio-message'}, state.text),
     css: `{ position: absolute;
@@ -334,16 +126,15 @@ jb.component('label.studio-message', { /* label.studioMessage */
       width: 1000px;
       margin-top: -100px;
       }`,
-    features: label.bindText()
+    features: text.bindText()
   })
 })
 
-jb.component('dialog.studio-multiline-edit', { /* dialog.studioMultilineEdit */
+jb.component('dialog.studioMultilineEdit', {
   type: 'dialog.style',
   impl: customStyle({
     template: (cmp,state,h) => h('div',{ class: 'jb-dialog jb-popup'},[
-      h('button',{class: 'dialog-close', onclick:
-        _=> cmp.dialogClose() },'×'),
+      h('button',{class: 'dialog-close', onclick: 'dialogClose' },'×'),
       h(state.contentComp),
     ]),
     css: `{ background: #fff; position: absolute; min-width: 280px; min-height: 200px;
@@ -366,39 +157,7 @@ jb.component('dialog.studio-multiline-edit', { /* dialog.studioMultilineEdit */
     features: [
       dialogFeature.maxZIndexOnClick(),
       dialogFeature.closeWhenClickingOutside(),
-      dialogFeature.cssClassOnLaunchingElement(),
-      dialogFeature.studioPositionUnderProperty()
+      dialogFeature.cssClassOnLaunchingElement()
     ]
-  })
-})
-
-// jb.component('studio.toolbarButton', {
-// 	type: 'button.style',
-// 	params: [
-// 		{ id: 'spritePosition', as: 'string', defaultValue: '0,0' }
-// 	],
-// 	impl: {$: 'custom-style',
-// 			template: (cmp,state,h) => h('button',{class: 'studio-btn-toolbar', click: _=> cmp.clicked() },
-//           h('span', {title: state.title, style: { 'background-position': state.pos} })),
-//       features: ctx => ({
-//           init: cmp =>
-//               cmp.state.pos = cmp.spritePosition.split(',').map(item => (-parseInt(item) * 16) + 'px').join(' '),
-//       })
-// 	}
-// })
-
-jb.component('studio.toolbar-style', { /* studio.toolbarStyle */
-  type: 'group.style',
-  impl: customStyle({
-    template: (cmp,state,h) => h('section',{class:'jb-group'},
-        state.ctrls.map(ctrl=> jb.ui.item(cmp,h(ctrl),ctrl.ctx))),
-    css: `{
-            display: flex;
-            height: 33px;
-            width: 100%;
-        }
-        >*:not(:last-child) { padding-right: 8px }
-        >* { margin-right: 0 }`,
-    features: group.initGroup()
   })
 })

@@ -1,12 +1,11 @@
 (function() {
-jb.component('tree.json-read-only', { /* tree.jsonReadOnly */
+jb.component('tree.jsonReadOnly', {
   type: 'tree.node-model',
   params: [
     {id: 'object', as: 'single'},
     {id: 'rootPath', as: 'string'}
   ],
-  impl: (ctx, json, rootPath) =>
-		new ROjson(json,rootPath)
+  impl: (ctx, json, rootPath) => new ROjson(json,rootPath)
 })
 
 class ROjson {
@@ -45,11 +44,11 @@ class ROjson {
 
 		return h('div',{},[h('span',{},prop + ': ')].concat(
 			Object.keys(val).filter(p=>p.indexOf('$jb_') != 0).filter(p=> ['string','boolean','number'].indexOf(typeof val[p]) != -1)
-			.map(p=> [h('span',{class:'treenode-val', title: ''+val[p]},jb.ui.limitStringLength(''+val[p],20)) ])))
+			.map(p=> h('span',{class:'treenode-val', title: ''+val[p]},jb.ui.limitStringLength(''+val[p],20)))))
 	}
 }
 
-jb.component('tree.json', { /* tree.json */
+jb.component('tree.json', {
   type: 'tree.node-model',
   params: [
     {id: 'object', as: 'ref'},
@@ -88,25 +87,32 @@ class Json {
 		var prop = path.split('~').pop();
 		var h = jb.ui.h;
 		if (val == null)
-			return h(prop + ': null');
+			return prop + ': null';
 		if (!collapsed && typeof val == 'object')
-			return h('div',{},prop);
+			return prop
 
 		if (typeof val != 'object')
 			return h('div',{},[prop + ': ',h('span',{class:'treenode-val', title: val},jb.ui.limitStringLength(val,20))]);
 
 		return h('div',{},[h('span',{},prop + ': ')].concat(
 			Object.keys(val).filter(p=> typeof val[p] == 'string' || typeof val[p] == 'number' || typeof val[p] == 'boolean')
-			.map(p=> [h('span',{class:'treenode-val', title: ''+val[p]},jb.ui.limitStringLength(''+val[p],20)) ])))
+			.map(p=> h('span',{class:'treenode-val', title: ''+val[p]},jb.ui.limitStringLength(''+val[p],20)))))
 	}
 	modify(op,path,args,ctx) {
 		op.call(this,path,args);
 	}
-	move(dragged,target,ctx) { // drag & drop
+	move(dragged,_target,ctx) { // drag & drop
 		const draggedArr = this.val(dragged.split('~').slice(0,-1).join('~'));
+		const target = isNaN(Number(_target.split('~').slice(-1))) ? _target + '~0' : _target
 		const targetArr = this.val(target.split('~').slice(0,-1).join('~'));
 		if (Array.isArray(draggedArr) && Array.isArray(targetArr))
-			jb.move(jb.asRef(this.val(dragged)), jb.asRef(this.val(target)))
+			jb.move(jb.asRef(this.val(dragged)), this.val(target) ? jb.asRef(this.val(target)) : this.extraArrayRef(target) ,ctx)
+	}
+	extraArrayRef(target) {
+		const targetArr = this.val(target.split('~').slice(0,-1).join('~'));
+		const targetArrayRef = jb.asRef(targetArr)
+		const handler = targetArrayRef.handler
+		return handler && handler.refOfPath(handler.pathOfRef(targetArrayRef).concat(target.split('~').slice(-1)))
 	}
 }
 

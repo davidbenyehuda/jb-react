@@ -6,23 +6,23 @@ jb.component('person', { watchableData: {
 }
 })
 
-jb.component('probe-test.single-control', { /* probeTest.singleControl */
+jb.component('probeTest.singleControl', {
   impl: studioProbeTest({
-    circuit: group({controls: label('hello')}),
+    circuit: group({controls: text('hello')}),
     probePath: 'controls',
     expectedVisits: 1
   })
 })
 
-jb.component('probe-test.pt-by-example', { /* probeTest.ptByExample */
+jb.component('probeTest.ptByExample', {
   impl: studioProbeTest({
-    circuit: group({controls: itemlist({items: list(1, 2), controls: label('hello')})}),
+    circuit: group({controls: itemlist({items: list(1, 2), controls: text('hello')})}),
     probePath: 'controls~controls',
     expectedVisits: 2
   })
 })
 
-jb.component('probe-test.using-global', { /* probeTest.usingGlobal */
+jb.component('probeTest.usingGlobal', {
   impl: studioProbeTest({
     circuit: group({controls: test.innerLabel()}),
     probePath: 'controls',
@@ -30,14 +30,14 @@ jb.component('probe-test.using-global', { /* probeTest.usingGlobal */
   })
 })
 
-jb.component('test.inner-label', { /* test.innerLabel */
+jb.component('test.innerLabel', {
   type: 'control',
-  impl: label(
+  impl: text(
     'hello'
   )
 })
 
-jb.component('test.inner-label-template', { /* test.innerLabelTemplate */
+jb.component('test.innerLabelTemplate', {
   type: 'control',
   params: [
     {id: 'ctrl', type: 'control', dynamic: true}
@@ -47,7 +47,7 @@ jb.component('test.inner-label-template', { /* test.innerLabelTemplate */
   })
 })
 
-jb.component('test.inner-label-template-static-param', { /* test.innerLabelTemplateStaticParam */
+jb.component('test.innerLabelTemplateStaticParam', {
   type: 'control',
   params: [
     {id: 'param1', type: 'string'}
@@ -59,7 +59,7 @@ jb.component('test.inner-label-template-static-param', { /* test.innerLabelTempl
   })
 })
 
-jb.component('probe-test.static-inner-in-template', { /* probeTest.staticInnerInTemplate */
+jb.component('probeTest.staticInnerInTemplate', {
   impl: studioProbeTest({
     circuit: group({controls: test.innerLabelTemplateStaticParam('hello')}),
     probePath: 'controls~param1',
@@ -67,36 +67,44 @@ jb.component('probe-test.static-inner-in-template', { /* probeTest.staticInnerIn
   })
 })
 
-jb.component('probe-test.inner-in-template', { /* probeTest.innerInTemplate */
+jb.component('probeTest.labelText', {
   impl: studioProbeTest({
-    circuit: group({controls: test.innerLabelTemplate(label('hello'))}),
-    probePath: 'controls~ctrl~title',
-    expectedVisits: 2
+    circuit: text(ctx => 'hello'),
+    probePath: 'text',
+    expectedVisits: 1
   })
 })
 
-jb.component('probe-test.pipeline-sugar-json-format', { /* probeTest.pipelineSugar */
+jb.component('probeTest.innerInTemplate', {
   impl: studioProbeTest({
-    circuit: group({controls: label({ title: {$pipeline: ['hello'] } })}) ,
-    probePath: 'controls~title~$pipeline~0'
+    circuit: group({controls: test.innerLabelTemplate(text('hello'))}),
+    probePath: 'controls~ctrl~text',
+    expectedVisits: 1
   })
 })
 
-jb.component('probe-test.pipeline-no-sugar', { /* probeTest.pipelineNoSugar */
+jb.component('probeTest.pipelineNoSugar', {
   impl: studioProbeTest({
-    circuit: group({controls: label({title: pipeline('hello')})}),
-    probePath: 'controls~title~items~0'
+    circuit: group({controls: text({text: pipeline('hello')})}),
+    probePath: 'controls~text~items~0'
   })
 })
 
-jb.component('probe-test.pipeline-one-elem-json-format', { /* probeTest.pipelineOneElem */
+jb.component('probeTest.pipelineSugarJsonFormat', {
   impl: studioProbeTest({
-    circuit: group({controls: label({title: {$: 'pipeline', items: 'hello' }})}),
-    probePath: 'controls~title~items'
+    circuit: group({controls: text({text: {$pipeline: ['hello'] } })}) ,
+    probePath: 'controls~text~$pipeline~0'
   })
 })
 
-jb.component('probe-test.actions-sugar', { /* probeTest.actionsSugar */
+jb.component('probeTest.pipelineOneElemJsonFormat', {
+  impl: studioProbeTest({
+    circuit: group({controls: text({text: {$: 'pipeline', items: 'hello' }})}),
+    probePath: 'controls~text~items'
+  })
+})
+
+jb.component('probeTest.actionsSugar', {
   impl: studioProbeTest({
     circuit: group({controls: button({title: 'hello', action: [gotoUrl('google')]})}),
     probePath: 'controls~action~0',
@@ -104,7 +112,7 @@ jb.component('probe-test.actions-sugar', { /* probeTest.actionsSugar */
   })
 })
 
-jb.component('probe-test.inside-write-value', { /* probeTest.insideWriteValue */
+jb.component('probeTest.insideWriteValue', {
   impl: studioProbeTest({
     circuit: button({action: writeValue('%$person/name%', 'homer')}),
     probePath: 'action~to',
@@ -112,19 +120,19 @@ jb.component('probe-test.inside-write-value', { /* probeTest.insideWriteValue */
   })
 })
 
-jb.component('probe-test.inside-open-dialog', { /* probeTest.insideOpenDialog */
+jb.component('probeTest.insideOpenDialog', {
   impl: studioProbeTest({
-    circuit: button({action: openDialog({content: label('hello')})}),
-    probePath: 'action~content~title',
-    expectedVisits: 2
+    circuit: button({action: openDialog({content: text('hello')})}),
+    probePath: 'action~content~text',
+    expectedVisits: 1
   })
 })
 
-jb.component('probe-test.inside-open-dialog-onOk', { /* probeTest.insideOpenDialogOnOk */
+jb.component('probeTest.insideOpenDialogOnOk', {
   impl: studioProbeTest({
     circuit: button({
       action: openDialog({
-        content: label('hello'),
+        content: text('hello'),
         onOK: writeValue('%$person/name%', 'homer')
       })
     }),
@@ -133,7 +141,7 @@ jb.component('probe-test.inside-open-dialog-onOk', { /* probeTest.insideOpenDial
   })
 })
 
-jb.component('probe-test.inside-goto-url', { /* probeTest.insideGotoUrl */
+jb.component('probeTest.insideGotoUrl', {
   impl: studioProbeTest({
     circuit: button({action: gotoUrl('google')}),
     probePath: 'action~url',
@@ -141,7 +149,7 @@ jb.component('probe-test.inside-goto-url', { /* probeTest.insideGotoUrl */
   })
 })
 
-jb.component('test.action-with-side-effects', { /* test.actionWithSideEffects */
+jb.component('test.actionWithSideEffects', {
   type: 'action,has-side-effects',
   params: [
     {id: 'text', as: 'string'}
@@ -149,7 +157,7 @@ jb.component('test.action-with-side-effects', { /* test.actionWithSideEffects */
   impl: _ => 0
 })
 
-jb.component('probe-test.inside-action-with-side-effects', { /* probeTest.insideActionWithSideEffects */
+jb.component('probeTest.insideActionWithSideEffects', {
   impl: studioProbeTest({
     circuit: button({action: test.actionWithSideEffects('hello')}),
     probePath: 'action~text',
@@ -158,21 +166,21 @@ jb.component('probe-test.inside-action-with-side-effects', { /* probeTest.inside
 })
 
 
-jb.component('probe-test.filter-no-sugar', { /* probeTest.filterNoSugar */
+jb.component('probeTest.filterNoSugar', {
   impl: studioProbeTest({
-    circuit: group({controls: label({title: pipeline('hello', filter('%% == \"hello\"'))})}),
-    probePath: 'controls~title~items~1~filter'
+    circuit: group({controls: text({text: pipeline('hello', filter('%% == \"hello\"'))})}),
+    probePath: 'controls~text~items~1~filter'
   })
 })
 
-jb.component('test.label1', { /* test.label1 */
+jb.component('test.label1', {
   type: 'control',
-  impl: label({
-    
+  impl: text({
+
   })
 })
 
-jb.component('path-change-test.wrap', { /* pathChangeTest.wrap */
+jb.component('pathChangeTest.wrap', {
   impl: pathChangeTest({
     path: 'test.label1~impl',
     action: studio.wrapWithGroup('test.label1~impl'),
@@ -180,7 +188,7 @@ jb.component('path-change-test.wrap', { /* pathChangeTest.wrap */
   })
 })
 
-jb.component('test.pathSrc-comp', { /* test.pathSrcComp */
+jb.component('test.pathSrcComp', {
   params: [
     {id: 'items', dynamic: true}
   ],
@@ -189,7 +197,7 @@ jb.component('test.pathSrc-comp', { /* test.pathSrcComp */
   )
 })
 
-jb.component('test.pathSrc-caller', { /* test.pathSrcCaller */
+jb.component('test.pathSrcCaller', {
   params: [
     {id: 'items', dynamic: true}
   ],
@@ -198,10 +206,10 @@ jb.component('test.pathSrc-caller', { /* test.pathSrcCaller */
   )
 })
 
-jb.component('probe-test.pathSrc-through-$call', { /* probeTest.pathSrcThrough-$call */
+jb.component('probeTest.pathSrcThrough$call', {
   impl: dataTest({
     calculate: ctx => {
-   	 var probe1 = new jb.studio.Probe(new jb.jbCtx(ctx,{ profile: {$: 'test.pathSrc-caller'}, comp: 'test.pathSrc-caller', path: '' } ),true)
+   	 var probe1 = new jb.studio.Probe(new jb.jbCtx(ctx,{ profile: {$: 'test.pathSrcCaller'}, comp: 'test.pathSrcCaller', path: '' } ),true)
       .runCircuit('test.pathSrc-comp~impl~items~1');
     return probe1.then(res=>
     	''+res.result.visits)
@@ -210,11 +218,11 @@ jb.component('probe-test.pathSrc-through-$call', { /* probeTest.pathSrcThrough-$
   })
 })
 
-jb.component('probe-test.pathSrc-through-$call-2', { /* probeTest.pathSrcThrough-$call-2 */
+jb.component('probeTest.pathSrcThrough$call2', {
   impl: dataTest({
     calculate: ctx => {
-   	 var probe1 = new jb.studio.Probe(new jb.jbCtx(ctx,{ profile: {$: 'test.pathSrc-caller'}, comp: 'test.pathSrc-caller', path: '' } ),true)
-      .runCircuit('test.pathSrc-caller~impl~items~1');
+   	 var probe1 = new jb.studio.Probe(new jb.jbCtx(ctx,{ profile: {$: 'test.pathSrcCaller'}, comp: 'test.pathSrcCaller', path: '' } ),true)
+      .runCircuit('test.pathSrcCaller~impl~items~1');
     return probe1.then(res=>
     	''+res.result.visits)
    },
@@ -237,7 +245,7 @@ jb.component('probe-test.pathSrc-through-$call-2', { /* probeTest.pathSrcThrough
 // // 		circuit: {$: 'group',
 // 			controls :{$: 'label', title :{ $asIs: 'hello'} },
 // 		},
-// 		probePath : 'controls~title~$asIs',
+// 		probePath : 'controls~text~$asIs',
 // 		expectedVisits: 0,
 // 		probeCheck : '%$tst% == ""'
 // 	}

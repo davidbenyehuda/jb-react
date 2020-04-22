@@ -1,14 +1,21 @@
 {
     "version": "0.2.0",
     "configurations": [
+
         {
             "type": "node",
             "request": "launch",
             "name": "pretty",
             "program": "${workspaceFolder}/bin/tgp-pretty",
-            "args": ["-file:studio-"],
+            "args": ["-file:d3-"],
         },
-
+        {
+            "name": "Run Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "runtimeExecutable": "${execPath}",
+            "args": ["--extensionDevelopmentPath=${workspaceRoot}/hosts/vscode"],
+        },
         {
             "name": "Launch",
             "type": "node",

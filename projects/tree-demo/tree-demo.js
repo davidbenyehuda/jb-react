@@ -13,14 +13,14 @@ jb.component('personWithChildren', { /* personWithChildren */
   }
 })
 
-jb.component('tree-demo.main', { 
+jb.component('treeDemo.main', { 
   impl: tree({
       nodeModel: tree.jsonReadOnly('%$personWithAddress%', 'personWithAddress'),
       features: [tree.selection({}), tree.keyboardSelection({})]
   }),
 })
 
-jb.component('tree-demo.right-click', { 
+jb.component('treeDemo.rightClick', { 
   impl: tree({
       nodeModel: tree.jsonReadOnly('%$personWithAddress%', 'personWithAddress'),
       features: [
@@ -32,7 +32,7 @@ jb.component('tree-demo.right-click', {
     }),
 })
 
-jb.component('tree-demo.drag-and-drop-children', { 
+jb.component('treeDemo.dragAndDrop', { 
   impl: tree({
       nodeModel: tree.json('%$personWithChildren%', 'personWithChildren'),
       features: [
@@ -44,8 +44,7 @@ jb.component('tree-demo.drag-and-drop-children', {
     }),
 })
 
-
-jb.component('tree-demo.table-tree', { /* treeDemo.tableTree */
+jb.component('treeDemo.tableTree', {
   type: 'control',
   impl: group({
     controls: [
@@ -63,7 +62,7 @@ jb.component('tree-demo.table-tree', { /* treeDemo.tableTree */
           )
         }),
         commonFields: text({title: 'path', text: '%path%'}),
-        chapterHeadline: label({title: suffix('~', '%path%')}),
+        chapterHeadline: text({text: suffix('~', '%path%')}),
         style: tableTree.plain(),
         features: id('tableTree')
       })
