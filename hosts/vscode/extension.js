@@ -91,7 +91,7 @@ class jBartStudio {
         ${jbModuleUrl ? studioBin : studioDev}
 	</head>
 	<body style="zoom: 0.8">
-		<div id="studio" style="background-color: white;width:1280px;"> </div>
+		<div id="studio"> </div>
 		<script>
 		  jb.studio.vsCodeApi = acquireVsCodeApi()
 		  jb.ui.render(jb.ui.h(jb.exec({$:'studio.all'})), document.getElementById('studio'))
